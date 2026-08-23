@@ -1,0 +1,78 @@
+{
+  "name": "mts-event-manager",
+  "displayName": "MTS Event Manager",
+  "description": "Event-Label navigation, snippet helpers and validation for Mind the School RenPy events.",
+  "version": "0.1.0",
+  "publisher": "mts",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:renpy",
+    "workspaceContains:**/*.rpy"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mtsEventManager.peekEventDefs",
+        "title": "MTS: Peek Event Definitions"
+      },
+      {
+        "command": "mtsEventManager.gotoLabel",
+        "title": "MTS: Go to Event Label"
+      },
+      {
+        "command": "mtsEventManager.insertCondition",
+        "title": "MTS: Insert Condition"
+      },
+      {
+        "command": "mtsEventManager.insertSelector",
+        "title": "MTS: Insert Selector"
+      },
+      {
+        "command": "mtsEventManager.insertPattern",
+        "title": "MTS: Insert Pattern"
+      },
+      {
+        "command": "mtsEventManager.insertOption",
+        "title": "MTS: Insert Option"
+      },
+      {
+        "command": "mtsEventManager.reindex",
+        "title": "MTS: Reindex Workspace"
+      }
+    ],
+    "configuration": {
+      "title": "MTS Event Manager",
+      "properties": {
+        "mtsEventManager.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens for events and labels."
+        },
+        "mtsEventManager.enableDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Validate Event argument structure against discovered schemas."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch=forever",
+    "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.3.3"
+  }
+}

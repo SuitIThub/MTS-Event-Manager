@@ -1,0 +1,216 @@
+import * as vscode from 'vscode';
+import {
+  findMatching,
+  offsetToPosition,
+  readIdentifier,
+  readStringLiteral,
+  skipString,
+  skipWhitespaceAndComments,
+} from './scan';
+import { ParsedArg, ParsedCall } from './types';
+
+function toRange(text: string, start: number, end: number): vscode.Range {
+  const s = offsetToPosition(text, start);
+  const e = offsetToPosition(text, end);
+  return new vscode.Range(s.line, s.character, e.line, e.character);
+}
+
+/**
+ * Parse a function/class call starting at `nameStart` where an identifier begins,
+ * followed by `(`. Returns undefined if not a call.
+ */
+export function parseCallAt(text: string, nameStart: number): ParsedCall | undefined {
+  const id = readIdentifier(text, nameStart);
+  if (!id) {
+    return undefined;
+  }
+  let i = skipWhitespaceAndComments(text, id.end);
+  if (i >= text.length || text[i] !== '(') {
+    return undefined;
+  }
+  const open = i;
+  const close = findMatching(text, open);
+  if (close < 0) {
+    return undefined;
+  }
+  const args = parseArgList(text, open + 1, close);
+  return {
+    name: id.name,
+    range: toRange(text, nameStart, close + 1),
+    nameRange: toRange(text, nameStart, id.end),
+    args,
+  };
+}
+
+/**
+ * Split arguments between `start` (after `(`) and `end` (at `)`), respecting nesting/strings.
+ */
+export function parseArgList(text: string, start: number, end: number): ParsedArg[] {
+  const args: ParsedArg[] = [];
+  let i = skipWhitespaceAndComments(text, start);
+  while (i < end) {
+    const argStart = i;
+    // Detect keyword: ident = (not ==)
+    let keyword: string | undefined;
+    const maybeId = readIdentifier(text, i);
+    if (maybeId) {
+      const after = skipWhitespaceAndComments(text, maybeId.end);
+      if (after < end && text[after] === '=' && text[after + 1] !== '=') {
+        keyword = maybeId.name;
+        i = skipWhitespaceAndComments(text, after + 1);
+      }
+    }
+
+    const valueStart = i;
+    // Scan until comma at depth 0 or end
+    let depthParen = 0;
+    let depthBracket = 0;
+    let depthBrace = 0;
+    while (i < end) {
+      const c = text[i];
+      if (c === '"' || c === "'") {
+        i = skipString(text, i);
+        continue;
+      }
+      if (c === '#') {
+        while (i < end && text[i] !== '\n') {
+          i++;
+        }
+        continue;
+      }
+      if (c === '(') {
+        depthParen++;
+        i++;
+        continue;
+      }
+      if (c === ')') {
+        if (depthParen === 0) {
+          break;
+        }
+        depthParen--;
+        i++;
+        continue;
+      }
+      if (c === '[') {
+        depthBracket++;
+        i++;
+        continue;
+      }
+      if (c === ']') {
+        depthBracket--;
+        i++;
+        continue;
+      }
+      if (c === '{') {
+        depthBrace++;
+        i++;
+        continue;
+      }
+      if (c === '}') {
+        depthBrace--;
+        i++;
+        continue;
+      }
+      if (c === ',' && depthParen === 0 && depthBracket === 0 && depthBrace === 0) {
+        break;
+      }
+      i++;
+    }
+
+    const valueEnd = i;
+    const valueText = text.slice(valueStart, valueEnd).trim();
+    if (valueText.length > 0 || keyword) {
+      const trimmedStart =
+        valueStart + (text.slice(valueStart, valueEnd).match(/^\s*/)?.[0].length ?? 0);
+      const nested = parseCallAt(text, trimmedStart);
+      args.push({
+        name: keyword,
+        text: valueText,
+        range: toRange(text, argStart, valueEnd),
+        call: nested,
+      });
+    }
+
+    if (i < end && text[i] === ',') {
+      i++;
+    }
+    i = skipWhitespaceAndComments(text, i);
+  }
+  return args;
+}
+
+function positionToOffsetApprox(text: string, pos: vscode.Position): number {
+  let line = 0;
+  let i = 0;
+  while (i < text.length && line < pos.line) {
+    if (text[i] === '\n') {
+      line++;
+    }
+    i++;
+  }
+  return i + pos.character;
+}
+
+/** Find all top-level-ish calls of given names in text. */
+export function findCallsByName(text: string, names: Set<string>): ParsedCall[] {
+  const results: ParsedCall[] = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      i = skipString(text, i);
+      continue;
+    }
+    if (c === '#') {
+      while (i < n && text[i] !== '\n') {
+        i++;
+      }
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      const id = readIdentifier(text, i);
+      if (id && names.has(id.name)) {
+        const after = skipWhitespaceAndComments(text, id.end);
+        if (after < n && text[after] === '(') {
+          const call = parseCallAt(text, i);
+          if (call) {
+            results.push(call);
+            i = positionToOffsetApprox(text, call.range.end);
+            continue;
+          }
+        }
+      }
+      i = id ? id.end : i + 1;
+      continue;
+    }
+    i++;
+  }
+  return results;
+}
+
+/** Extract second positional string argument from a call (event label name). */
+export function secondPositionalString(call: ParsedCall): string | undefined {
+  let positionalIndex = 0;
+  for (const arg of call.args) {
+    if (arg.name) {
+      continue;
+    }
+    if (positionalIndex === 1) {
+      const lit = readStringLiteral(arg.text, 0);
+      return lit?.value;
+    }
+    positionalIndex++;
+  }
+  return undefined;
+}
+
+/** Walk all nested calls under a call tree. */
+export function walkCalls(call: ParsedCall, visit: (c: ParsedCall) => void): void {
+  visit(call);
+  for (const arg of call.args) {
+    if (arg.call) {
+      walkCalls(arg.call, visit);
+    }
+  }
+}
