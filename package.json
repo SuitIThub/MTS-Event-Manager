@@ -1,8 +1,8 @@
 {
   "name": "mts-event-manager",
   "displayName": "MTS Event Manager",
-  "description": "Event-Label navigation, snippet helpers and validation for Mind the School RenPy events.",
-  "version": "0.1.0",
+  "description": "Event-Label navigation, snippet helpers, image preview and validation for Mind the School RenPy events.",
+  "version": "0.4.0",
   "publisher": "mts",
   "engines": {
     "vscode": "^1.85.0"
@@ -45,6 +45,14 @@
       {
         "command": "mtsEventManager.reindex",
         "title": "MTS: Reindex Workspace"
+      },
+      {
+        "command": "mtsEventManager.previewImages",
+        "title": "MTS: Preview Pattern Images"
+      },
+      {
+        "command": "mtsEventManager.customPortraits",
+        "title": "MTS: Custom Portraits"
       }
     ],
     "configuration": {
@@ -59,20 +67,50 @@
           "type": "boolean",
           "default": true,
           "description": "Validate Event argument structure against discovered schemas."
+        },
+        "mtsEventManager.enableImagePreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens and hover image previews on pattern show calls."
+        },
+        "mtsEventManager.enablePortraits": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show character portraits inline before dialogue speaker variables."
+        },
+        "mtsEventManager.imageHoverSecondsPerFrame": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0.5,
+          "maximum": 10,
+          "description": "Seconds each image is shown in the hover auto-carousel."
+        },
+        "mtsEventManager.imageRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional base folders for resolving Pattern image paths (absolute or workspace-relative). Workspace **/game folders are always included."
         }
       }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
-    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch=forever",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap --watch=forever",
     "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@types/sharp": "^0.31.1",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "gifenc": "^1.0.3",
+    "sharp": "^0.35.4"
   }
 }

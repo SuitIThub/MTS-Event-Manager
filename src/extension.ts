@@ -2,7 +2,10 @@ import * as vscode from 'vscode';
 import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
 import { EventDiagnostics } from './diagnostics';
+import { MtsImageHoverProvider } from './imageHover';
 import { WorkspaceIndex } from './indexer';
+import { PortraitDecorator } from './portraitDecorations';
+import { PortraitStore } from './portraitStore';
 
 const RPY_SELECTOR: vscode.DocumentSelector = [
   { language: 'renpy', scheme: 'file' },
@@ -13,13 +16,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const index = new WorkspaceIndex();
   const diagnostics = new EventDiagnostics(index);
   const codeLens = new MtsCodeLensProvider(index);
+  const imageHover = new MtsImageHoverProvider(index, context);
+  const portraits = new PortraitStore(context);
+  new PortraitDecorator(index, context, portraits);
 
-  context.subscriptions.push(index, diagnostics);
+  context.subscriptions.push(index, diagnostics, portraits);
 
-  registerCommands(context, index);
+  registerCommands(context, index, portraits);
 
   context.subscriptions.push(
-    vscode.languages.registerCodeLensProvider(RPY_SELECTOR, codeLens)
+    vscode.languages.registerCodeLensProvider(RPY_SELECTOR, codeLens),
+    vscode.languages.registerHoverProvider(RPY_SELECTOR, imageHover)
   );
 
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.rpy');

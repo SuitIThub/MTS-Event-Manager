@@ -1,22 +1,33 @@
 import * as vscode from 'vscode';
+import { resolveImagesForCall } from './patternResolve';
+import { labelNameForImageCall, parseImageCallsInDocument } from './parseImageCalls';
+import { paramConstraintsForLine } from './paramConstraints';
 import { WorkspaceIndex } from './indexer';
+import { ImageCallSite } from './types';
 
 export class MtsCodeLensProvider implements vscode.CodeLensProvider {
   private readonly onDidChangeCodeLensesEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.onDidChangeCodeLensesEmitter.event;
 
+  /** Cache: `${uri}::${version}::${line}` → count (-1 pending miss) */
+  private imageCountCache = new Map<string, number>();
+
   constructor(private readonly index: WorkspaceIndex) {
-    index.onDidChange(() => this.onDidChangeCodeLensesEmitter.fire());
+    index.onDidChange(() => {
+      this.imageCountCache.clear();
+      this.onDidChangeCodeLensesEmitter.fire();
+    });
   }
 
   refresh(): void {
+    this.imageCountCache.clear();
     this.onDidChangeCodeLensesEmitter.fire();
   }
 
-  provideCodeLenses(
+  async provideCodeLenses(
     document: vscode.TextDocument,
     _token: vscode.CancellationToken
-  ): vscode.CodeLens[] {
+  ): Promise<vscode.CodeLens[]> {
     if (!this.index.hasEventSyntax) {
       return [];
     }
@@ -91,8 +102,80 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
       );
     }
 
+    if (config.get<boolean>('enableImagePreview', true)) {
+      const labels = this.index.getLabelsForUri(document.uri);
+      const sites = parseImageCallsInDocument(document.getText(), labels);
+      for (const site of sites) {
+        const count = await this.countImages(document, site, labels);
+        const title =
+          count > 0 ? (count === 1 ? '🖼 Preview' : `🖼 ${count}`) : '⚠ No image';
+        lenses.push(
+          new vscode.CodeLens(
+            new vscode.Range(site.range.start.line, 0, site.range.start.line, 200),
+            {
+              title,
+              command: 'mtsEventManager.previewImages',
+              arguments: [
+                document.uri.toString(),
+                {
+                  kind: site.kind,
+                  line: site.range.start.line,
+                  character: site.range.start.character,
+                  variableName: site.variableName,
+                  patternKey: site.patternKey,
+                  steps: site.steps,
+                  literalPath: site.literalPath,
+                },
+              ],
+            }
+          )
+        );
+      }
+    }
+
     return lenses;
   }
+
+  private async countImages(
+    document: vscode.TextDocument,
+    site: ImageCallSite,
+    labels: ReturnType<WorkspaceIndex['getLabelsForUri']>
+  ): Promise<number> {
+    const cacheKey = `${document.uri.toString()}::${document.version}::${site.range.start.line}::${site.kind}`;
+    const cached = this.imageCountCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const uris = await resolveSiteImages(this.index, document, site, labels);
+    this.imageCountCache.set(cacheKey, uris.length);
+    return uris.length;
+  }
+}
+
+export async function resolveSiteImages(
+  index: WorkspaceIndex,
+  document: vscode.TextDocument,
+  site: ImageCallSite,
+  labels?: ReturnType<WorkspaceIndex['getLabelsForUri']>
+): Promise<import('./types').ResolvedImageInfo[]> {
+  const labs = labels ?? index.getLabelsForUri(document.uri);
+  if (site.kind === 'set_background_path') {
+    return resolveImagesForCall(site, []);
+  }
+  const labelName = labelNameForImageCall(labs, site);
+  if (!labelName) {
+    return [];
+  }
+  const patterns = index.getPatternsForLabel(labelName, site.patternKey);
+  const usePatterns =
+    patterns.length > 0 ? patterns : index.getPatternsForLabel(labelName);
+  const withConstraints: ImageCallSite = {
+    ...site,
+    paramConstraints:
+      site.paramConstraints ??
+      paramConstraintsForLine(document.getText(), labs, site.range.start.line),
+  };
+  return resolveImagesForCall(withConstraints, usePatterns);
 }
 
 function rangeToRaw(r: vscode.Range) {

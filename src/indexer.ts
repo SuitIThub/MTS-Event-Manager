@@ -1,11 +1,20 @@
 import * as vscode from 'vscode';
 import { parseEventsInDocument } from './parseEvents';
 import { parseLabelsInDocument } from './parseLabels';
+import {
+  buildPersonIndex,
+  mergeSelectorValues,
+  parseDefaultNames,
+  parsePersonsInDocument,
+  PersonIndexData,
+} from './parsePersons';
 import { buildSchemaRegistry, collectRawClasses } from './parseSchema';
 import {
   ClassSchema,
   EventDefinition,
+  EventPatternInfo,
   LabelDefinition,
+  PersonInfo,
   SchemaKind,
 } from './types';
 
@@ -13,6 +22,7 @@ export class WorkspaceIndex {
   private events: EventDefinition[] = [];
   private labels = new Map<string, LabelDefinition[]>();
   private schemas = new Map<string, ClassSchema>();
+  private persons: PersonIndexData = buildPersonIndex([], []);
   private _hasEventSyntax = false;
   private _version = 0;
 
@@ -56,6 +66,50 @@ export class WorkspaceIndex {
     return this.events.filter((e) => e.uri.toString() === uri.toString());
   }
 
+  /**
+   * All Pattern infos from events targeting this label (optionally filtered by key).
+   * Sublabels (`parent.sub`) inherit patterns from the parent event label.
+   */
+  getPersonIndex(): PersonIndexData {
+    return this.persons;
+  }
+
+  getSelectorValuesForLabel(labelName: string): Record<string, string[]> {
+    const names = [labelName];
+    const dot = labelName.indexOf('.');
+    if (dot > 0) {
+      names.push(labelName.slice(0, dot));
+    }
+    const events = names.flatMap((n) => this.getEventsForLabel(n));
+    return mergeSelectorValues(events);
+  }
+
+  getPatternsForLabel(labelName: string, patternKey?: string): EventPatternInfo[] {
+    const out: EventPatternInfo[] = [];
+    const seen = new Set<string>();
+    const names = [labelName];
+    const dot = labelName.indexOf('.');
+    if (dot > 0) {
+      names.push(labelName.slice(0, dot));
+    }
+    for (const name of names) {
+      for (const ev of this.getEventsForLabel(name)) {
+        for (const p of ev.patterns) {
+          if (patternKey && p.patternKey !== patternKey) {
+            continue;
+          }
+          const id = `${p.patternKey}|${p.pathTemplate}`;
+          if (seen.has(id)) {
+            continue;
+          }
+          seen.add(id);
+          out.push(p);
+        }
+      }
+    }
+    return out;
+  }
+
   getSchema(name: string): ClassSchema | undefined {
     return this.schemas.get(name);
   }
@@ -89,6 +143,8 @@ export class WorkspaceIndex {
     const labels = new Map<string, LabelDefinition[]>();
     const allRaw = [];
     const texts = new Map<string, string>();
+    const allPersons: PersonInfo[] = [];
+    const allDefaultNames: { key: string; first: string; last: string }[] = [];
     let hasEventSyntax = false;
 
     for (const uri of files) {
@@ -117,6 +173,8 @@ export class WorkspaceIndex {
       }
 
       events.push(...parseEventsInDocument(uri, text));
+      allPersons.push(...parsePersonsInDocument(text));
+      allDefaultNames.push(...parseDefaultNames(text));
       for (const lab of parseLabelsInDocument(uri, text)) {
         const list = labels.get(lab.name) ?? [];
         list.push(lab);
@@ -130,6 +188,7 @@ export class WorkspaceIndex {
     this.events = events;
     this.labels = labels;
     this.schemas = schemas;
+    this.persons = buildPersonIndex(allPersons, allDefaultNames);
     this._hasEventSyntax = hasEventSyntax;
     this._version++;
     this.onDidChangeEmitter.fire();

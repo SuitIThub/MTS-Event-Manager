@@ -24,6 +24,12 @@ export interface ClassSchema {
 
 export type EventKind = 'Event' | 'EventFragment' | 'EventComposite' | 'EventSelect';
 
+export interface EventPatternInfo {
+  patternKey: string;
+  pathTemplate: string;
+  altKeys: string[];
+}
+
 export interface EventDefinition {
   kind: EventKind;
   labelName: string;
@@ -33,6 +39,59 @@ export interface EventDefinition {
   /** First line / start of call for CodeLens */
   startRange: vscode.Range;
   variableName?: string;
+  patterns: EventPatternInfo[];
+  /** Selector key → possible string values (person keys, topics, …) */
+  selectorValues: Record<string, string[]>;
+}
+
+export type ImageCallKind =
+  | 'show'
+  | 'show_image'
+  | 'show_pattern'
+  | 'set_background'
+  | 'set_background_path';
+
+export interface ImageCallSite {
+  kind: ImageCallKind;
+  range: vscode.Range;
+  /** Variable holding Image_Series, if any */
+  variableName?: string;
+  /** Pattern key from convert_pattern / show_pattern */
+  patternKey?: string;
+  /** Fixed steps from show(n) / show_image(..., steps) / var[n] */
+  steps: number[];
+  /**
+   * Pattern placeholder constraints from enclosing if/elif (e.g. topic → ["ah"]).
+   * Multiple values mean "any of these".
+   */
+  paramConstraints?: Record<string, string[]>;
+  /** Literal relative path for set_background("images/...") */
+  literalPath?: string;
+}
+
+/** One resolved image file with pattern placeholder values. */
+export interface ResolvedImageInfo {
+  uri: vscode.Uri;
+  fileName: string;
+  fsPath: string;
+  /** Path relative to game/ root when known */
+  relativePath: string;
+  /** Placeholder values extracted from the path, e.g. { school_level: "2", step: "0" } */
+  params: Record<string, string>;
+  patternKey?: string;
+  pathTemplate?: string;
+}
+
+export interface PersonInfo {
+  key: string;
+  firstName: string;
+  lastName: string;
+  group: string;
+}
+
+export interface DialoguePortraitSite {
+  range: vscode.Range;
+  personKeys: string[];
 }
 
 export interface LabelDefinition {

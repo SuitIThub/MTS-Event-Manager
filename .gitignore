@@ -3,4 +3,5 @@ out/
 *.vsix
 .DS_Store
 scripts/verify.js
+scripts/verify-images.js
 scripts/pl.js

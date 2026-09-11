@@ -151,11 +151,20 @@ function positionToOffsetApprox(text: string, pos: vscode.Position): number {
   return i + pos.character;
 }
 
-/** Find all top-level-ish calls of given names in text. */
-export function findCallsByName(text: string, names: Set<string>): ParsedCall[] {
+function nameMatches(name: string, names: Set<string> | ((name: string) => boolean)): boolean {
+  return typeof names === 'function' ? names(name) : names.has(name);
+}
+
+function scanCalls(
+  text: string,
+  names: Set<string> | ((name: string) => boolean),
+  from: number,
+  to: number,
+  skipNested: boolean
+): ParsedCall[] {
   const results: ParsedCall[] = [];
-  const n = text.length;
-  let i = 0;
+  const n = Math.min(to, text.length);
+  let i = Math.max(0, from);
   while (i < n) {
     const c = text[i];
     if (c === '"' || c === "'") {
@@ -170,13 +179,13 @@ export function findCallsByName(text: string, names: Set<string>): ParsedCall[] 
     }
     if (/[A-Za-z_]/.test(c)) {
       const id = readIdentifier(text, i);
-      if (id && names.has(id.name)) {
+      if (id && nameMatches(id.name, names)) {
         const after = skipWhitespaceAndComments(text, id.end);
         if (after < n && text[after] === '(') {
           const call = parseCallAt(text, i);
           if (call) {
             results.push(call);
-            i = positionToOffsetApprox(text, call.range.end);
+            i = skipNested ? positionToOffsetApprox(text, call.range.end) : id.end;
             continue;
           }
         }
@@ -187,6 +196,24 @@ export function findCallsByName(text: string, names: Set<string>): ParsedCall[] 
     i++;
   }
   return results;
+}
+
+/** Find all top-level-ish calls of given names in text. */
+export function findCallsByName(text: string, names: Set<string>): ParsedCall[] {
+  return scanCalls(text, names, 0, text.length, true);
+}
+
+/**
+ * Find calls including nested ones (e.g. RandomListSelector inside another selector).
+ * `names` may be a set or a predicate. Optional `[from, to)` limits the scan.
+ */
+export function findAllCallsByName(
+  text: string,
+  names: Set<string> | ((name: string) => boolean),
+  from = 0,
+  to = text.length
+): ParsedCall[] {
+  return scanCalls(text, names, from, to, false);
 }
 
 /** Extract second positional string argument from a call (event label name). */

@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
+import { resolveSiteImages } from './codeLens';
+import { showImagePreviewCarousel } from './imagePreview';
 import { WorkspaceIndex } from './indexer';
+import { showPortraitPanel } from './portraitPanel';
+import { PortraitStore } from './portraitStore';
 import { pickAndInsertSchema } from './snippets';
-import { SchemaKind } from './types';
+import { ImageCallSite, SchemaKind } from './types';
 
 interface RawPos {
   line: number;
@@ -14,6 +18,16 @@ interface RawRange {
 interface RawLocation {
   uri: string;
   range: RawRange;
+}
+
+interface RawImageCall {
+  kind: ImageCallSite['kind'];
+  line: number;
+  character: number;
+  variableName?: string;
+  patternKey?: string;
+  steps: number[];
+  literalPath?: string;
 }
 
 function mkPosition(p: RawPos): vscode.Position {
@@ -30,7 +44,8 @@ function mkLocation(loc: RawLocation): vscode.Location {
 
 export function registerCommands(
   context: vscode.ExtensionContext,
-  index: WorkspaceIndex
+  index: WorkspaceIndex,
+  store: PortraitStore
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -96,6 +111,32 @@ export function registerCommands(
       void vscode.window.showInformationMessage(
         `MTS Event Manager: indexed ${index.getAllEvents().length} events, schemas ready.`
       );
-    })
+    }),
+    vscode.commands.registerCommand(
+      'mtsEventManager.previewImages',
+      async (uriStr: string, raw: RawImageCall) => {
+        const uri = vscode.Uri.parse(uriStr);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const site: ImageCallSite = {
+          kind: raw.kind,
+          range: new vscode.Range(raw.line, raw.character, raw.line, raw.character + 1),
+          variableName: raw.variableName,
+          patternKey: raw.patternKey,
+          steps: raw.steps ?? [],
+          literalPath: raw.literalPath,
+        };
+        const infos = await resolveSiteImages(index, doc, site);
+        const title =
+          site.patternKey != null
+            ? `Preview: ${site.patternKey}${site.steps.length ? ' @ ' + site.steps.join(',') : ''}`
+            : site.literalPath
+              ? `Preview: ${site.literalPath}`
+              : 'Image Preview';
+        showImagePreviewCarousel(title, infos, context);
+      }
+    ),
+    vscode.commands.registerCommand('mtsEventManager.customPortraits', () => {
+      showPortraitPanel(context, index, store);
+    }),
   );
 }

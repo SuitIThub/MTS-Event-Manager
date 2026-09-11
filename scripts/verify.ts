@@ -2,7 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseEventsInDocument } from '../src/parseEvents';
 import { parseLabelsInDocument } from '../src/parseLabels';
+import { labelAtLine } from '../src/parseImageCalls';
+import {
+  buildPersonIndex,
+  mergeSelectorValues,
+  parseDefaultNames,
+  parseDialoguePortraitSites,
+  parsePersonsInDocument,
+  resolveTokenToPersonKeys,
+} from '../src/parsePersons';
 import { buildSchemaRegistry, collectRawClasses } from '../src/parseSchema';
+import { PersonInfo } from '../src/types';
 import * as vscode from 'vscode';
 
 const MTS = 'M:\\MTS Project\\Mind the School\\game\\scripts';
@@ -49,6 +59,109 @@ async function main() {
   // Sublabel in office: fallback Event(..., "office_building.after_general_check")
   const subEv = officeEvents.find((e) => e.labelName === 'office_building.after_general_check');
   console.log('sublabel event:', !!subEv, subEv?.labelName);
+
+  // Portraits: persons, aliases, selector-backed dialogue
+  const charFile = read('character.rpy');
+  const valuesFile = read('values.rpy');
+  const persons: PersonInfo[] = parsePersonsInDocument(charFile.text);
+  const personIndex = buildPersonIndex(persons, parseDefaultNames(valuesFile.text));
+  console.log('persons:', persons.length, 'has sakura_mori:', personIndex.byKey.has('sakura_mori'));
+  console.log(
+    'headmaster →',
+    resolveTokenToPersonKeys('headmaster', personIndex).join(','),
+    'secretary →',
+    resolveTokenToPersonKeys('secretary', personIndex).join(','),
+    'teacher1 →',
+    resolveTokenToPersonKeys('teacher1', personIndex).join(',')
+  );
+  if (!personIndex.byKey.has('sakura_mori') || !personIndex.byKey.has('emiko_langley')) {
+    console.error('missing core persons');
+    process.exitCode = 1;
+  }
+  if (resolveTokenToPersonKeys('headmaster', personIndex)[0] !== 'headmaster') {
+    console.error('headmaster alias wrong');
+    process.exitCode = 1;
+  }
+  if (resolveTokenToPersonKeys('secretary', personIndex)[0] !== 'emiko_langley') {
+    console.error('secretary should map to emiko_langley');
+    process.exitCode = 1;
+  }
+  if (resolveTokenToPersonKeys('teacher1', personIndex)[0] !== 'lily_anderson') {
+    console.error('teacher1 should map to lily_anderson');
+    process.exitCode = 1;
+  }
+
+  const teach = read('events/teaching_lessons.rpy');
+  const teachEvents = parseEventsInDocument(teach.uri, teach.text);
+  const teachLabels = parseLabelsInDocument(teach.uri, teach.text);
+  const ld2 = teachEvents.find((e) => e.labelName === 'sb_teach_math_ld_2');
+  console.log('ld_girl_name selector:', ld2?.selectorValues.ld_girl_name);
+  const teachSites = parseDialoguePortraitSites(teach.text, teachLabels, personIndex, (line) => {
+    const lab = labelAtLine(teachLabels, line);
+    if (!lab) {
+      return {};
+    }
+    const names = [lab.name];
+    const dot = lab.name.indexOf('.');
+    if (dot > 0) {
+      names.push(lab.name.slice(0, dot));
+    }
+    return mergeSelectorValues(names.flatMap((n) => teachEvents.filter((e) => e.labelName === n)));
+  });
+  const girlSite = teachSites.find(
+    (s) =>
+      s.personKeys.includes('seraphina_clark') &&
+      s.personKeys.includes('hatano_miwa') &&
+      s.personKeys.includes('soyoon_yamamoto')
+  );
+  console.log(
+    'girl dialogue portraits:',
+    girlSite?.personKeys,
+    'line',
+    girlSite ? girlSite.range.start.line + 1 : '-'
+  );
+  const expectedGirls = ['hatano_miwa', 'seraphina_clark', 'soyoon_yamamoto'];
+  if (!girlSite || expectedGirls.some((k) => !girlSite.personKeys.includes(k))) {
+    console.error('expected selector portraits on girl in sb_teach_math_ld_2');
+    process.exitCode = 1;
+  }
+
+  const cafe = read('buildings/cafeteria.rpy');
+  const cafeEvents = parseEventsInDocument(cafe.uri, cafe.text);
+  const cafeEv = cafeEvents.find((e) => e.labelName === 'cafeteria_event_2');
+  console.log('cafeteria girl_name:', cafeEv?.selectorValues.girl_name);
+  if (
+    !cafeEv?.selectorValues.girl_name?.includes('adelaide_hall') ||
+    !cafeEv.selectorValues.girl_name.includes('miwa_igarashi')
+  ) {
+    console.error('nested RandomListSelector persons missing on cafeteria_event_2');
+    process.exitCode = 1;
+  }
+
+  const nm = read('events/new_management.rpy');
+  const nmEvents = parseEventsInDocument(nm.uri, nm.text);
+  const nmLabels = parseLabelsInDocument(nm.uri, nm.text);
+  const rumors = nmEvents.find((e) => e.labelName === 'nm_rumors_in_bloom_kiosk');
+  console.log('bystander selector:', rumors?.selectorValues.bystander);
+  const nmSites = parseDialoguePortraitSites(nm.text, nmLabels, personIndex, (line) => {
+    const lab = labelAtLine(nmLabels, line);
+    if (!lab) {
+      return {};
+    }
+    const names = [lab.name];
+    const dot = lab.name.indexOf('.');
+    if (dot > 0) {
+      names.push(lab.name.slice(0, dot));
+    }
+    return mergeSelectorValues(names.flatMap((n) => nmEvents.filter((e) => e.labelName === n)));
+  });
+  const bystanderSite = nmSites.find((s) => s.personKeys.includes('ikushi_ito') && s.personKeys.length >= 3);
+  const emikoSite = nmSites.find((s) => s.personKeys.length === 1 && s.personKeys[0] === 'emiko_langley');
+  console.log('bystander portraits:', bystanderSite?.personKeys, 'emiko site:', !!emikoSite);
+  if (!bystanderSite) {
+    console.error('expected bystander selector portraits');
+    process.exitCode = 1;
+  }
 
   // Schema discovery across all scripts (sample subset for speed: conditions + selector + images + yoga)
   const files = [
