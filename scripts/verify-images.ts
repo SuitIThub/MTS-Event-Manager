@@ -46,6 +46,11 @@ function main() {
   }
 
   const sites = parseImageCallsInDocument(yoga.text, labels);
+  const convert0 = sites.find((s) => s.kind === 'convert_pattern' && s.patternKey === 'main');
+  if (!convert0) {
+    console.error('expected convert_pattern("main") in yoga file');
+    process.exitCode = 1;
+  }
   const show0 = sites.find((s) => s.kind === 'show' && s.steps[0] === 0 && s.variableName === 'image');
   console.log('first image.show(0):', show0);
   if (!show0?.patternKey) {
@@ -72,12 +77,32 @@ function main() {
   }
 
   const lab = read('events/lab_intro.rpy');
+  const labEvents = parseEventsInDocument(lab.uri, lab.text);
   const labLabels = parseLabelsInDocument(lab.uri, lab.text);
   const labSites = parseImageCallsInDocument(lab.text, labLabels);
   const bgPath = labSites.find((s) => s.kind === 'set_background_path');
   const bgIdx = labSites.find((s) => s.kind === 'set_background');
   const showPat = labSites.find((s) => s.kind === 'show_pattern');
+  const convertPat = labSites.find(
+    (s) => s.kind === 'convert_pattern' && s.patternKey === 'main' && s.range.start.line === 17
+  );
+  const labIntro = labEvents.find((e) => e.labelName === 'lab_intro_1');
+  const labIntroPat = labIntro?.patterns.find((p) => p.patternKey === 'main');
   console.log('lab set_background path:', !!bgPath, 'index:', !!bgIdx, 'show_pattern:', !!showPat);
+  console.log('lab convert_pattern:', convertPat);
+  console.log('lab_intro_1 Pattern range:', labIntroPat?.range.start.line);
+  if (!convertPat) {
+    console.error('expected convert_pattern("main") on lab_intro_1');
+    process.exitCode = 1;
+  }
+  if (!labIntroPat || labIntroPat.range.start.line !== 10) {
+    console.error('expected Pattern("main") range on lab_intro_1 around line 10');
+    process.exitCode = 1;
+  }
+  if (!showPat?.patternKey) {
+    console.error('expected show_pattern with patternKey');
+    process.exitCode = 1;
+  }
   console.log(
     'label for show0:',
     show0 && labelNameForImageCall(labels, show0)
@@ -162,6 +187,28 @@ function main() {
   }
   const parsedIn = parseConditionExpr('topic in ["panties", "breasts"]');
   console.log('parseConditionExpr in-list:', parsedIn);
+
+  // Wiki Images §4: Pattern stays `images/…`; files live under game/mods/<Mod>/.
+  // Matching is relative to the mod folder (an extra image root), not to `game/`.
+  const modRe = templateToRegex('images/mymod_scene <step>.webp', { step: '0' });
+  if (!modRe.test('images/mymod_scene 0.webp')) {
+    console.error('mod-root relative path should match Pattern images/…');
+    process.exitCode = 1;
+  }
+  if (!modRe.test('images/mymod_scene 0.png')) {
+    console.error('mod png should match webp Pattern');
+    process.exitCode = 1;
+  }
+  if (modRe.test('mods/MyMod/images/mymod_scene 0.webp')) {
+    console.error('game-relative mods/… path must not match; use the mod folder as root');
+    process.exitCode = 1;
+  }
+  const slashRe = templateToRegex('/images/foo <step>.webp', { step: '1' });
+  if (!slashRe.test('images/foo 1.webp')) {
+    console.error('leading slash on Pattern should still match images/…');
+    process.exitCode = 1;
+  }
+  console.log('mod-path regex checks ok');
 
   console.log(process.exitCode ? 'IMAGE VERIFY FAILED' : 'IMAGE VERIFY OK');
 }

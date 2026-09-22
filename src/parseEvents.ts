@@ -26,6 +26,7 @@ function extractPatternsFromEventCall(call: import('./types').ParsedCall): Event
         patternKey: positionals[0],
         pathTemplate: positionals[1],
         altKeys: positionals.slice(2),
+        range: c.range,
       });
     }
   });

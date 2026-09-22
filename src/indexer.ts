@@ -2,6 +2,10 @@ import * as vscode from 'vscode';
 import { parseEventsInDocument } from './parseEvents';
 import { parseLabelsInDocument } from './parseLabels';
 import {
+  labelNameForImageCall,
+  parseImageCallsInDocument,
+} from './parseImageCalls';
+import {
   buildPersonIndex,
   mergeSelectorValues,
   parseDefaultNames,
@@ -14,6 +18,7 @@ import {
   EventDefinition,
   EventPatternInfo,
   LabelDefinition,
+  PatternUsage,
   PersonInfo,
   SchemaKind,
 } from './types';
@@ -21,6 +26,7 @@ import {
 export class WorkspaceIndex {
   private events: EventDefinition[] = [];
   private labels = new Map<string, LabelDefinition[]>();
+  private patternUsages: PatternUsage[] = [];
   private schemas = new Map<string, ClassSchema>();
   private persons: PersonIndexData = buildPersonIndex([], []);
   private _hasEventSyntax = false;
@@ -110,6 +116,41 @@ export class WorkspaceIndex {
     return out;
   }
 
+  getPatternLocations(labelName: string, patternKey: string): vscode.Location[] {
+    const out: vscode.Location[] = [];
+    const seen = new Set<string>();
+    const names = [labelName];
+    const dot = labelName.indexOf('.');
+    if (dot > 0) {
+      names.push(labelName.slice(0, dot));
+    }
+    for (const name of names) {
+      for (const ev of this.getEventsForLabel(name)) {
+        for (const p of ev.patterns) {
+          if (p.patternKey !== patternKey) {
+            continue;
+          }
+          const id = `${ev.uri.toString()}::${p.range.start.line}::${p.range.start.character}`;
+          if (seen.has(id)) {
+            continue;
+          }
+          seen.add(id);
+          out.push(new vscode.Location(ev.uri, p.range));
+        }
+      }
+    }
+    return out;
+  }
+
+  getPatternUsages(eventLabelName: string, patternKey: string): PatternUsage[] {
+    return this.patternUsages.filter((u) => {
+      if (u.patternKey !== patternKey) {
+        return false;
+      }
+      return u.labelName === eventLabelName || u.labelName.startsWith(eventLabelName + '.');
+    });
+  }
+
   getSchema(name: string): ClassSchema | undefined {
     return this.schemas.get(name);
   }
@@ -141,6 +182,7 @@ export class WorkspaceIndex {
     const files = await vscode.workspace.findFiles('**/*.rpy', '**/{node_modules,out,.git}/**');
     const events: EventDefinition[] = [];
     const labels = new Map<string, LabelDefinition[]>();
+    const patternUsages: PatternUsage[] = [];
     const allRaw = [];
     const texts = new Map<string, string>();
     const allPersons: PersonInfo[] = [];
@@ -175,10 +217,30 @@ export class WorkspaceIndex {
       events.push(...parseEventsInDocument(uri, text));
       allPersons.push(...parsePersonsInDocument(text));
       allDefaultNames.push(...parseDefaultNames(text));
-      for (const lab of parseLabelsInDocument(uri, text)) {
+      const fileLabels = parseLabelsInDocument(uri, text);
+      for (const lab of fileLabels) {
         const list = labels.get(lab.name) ?? [];
         list.push(lab);
         labels.set(lab.name, list);
+      }
+      for (const site of parseImageCallsInDocument(text, fileLabels)) {
+        if (site.kind !== 'convert_pattern' && site.kind !== 'show_pattern') {
+          continue;
+        }
+        if (!site.patternKey) {
+          continue;
+        }
+        const labelName = labelNameForImageCall(fileLabels, site);
+        if (!labelName) {
+          continue;
+        }
+        patternUsages.push({
+          kind: site.kind,
+          patternKey: site.patternKey,
+          labelName,
+          uri,
+          range: site.range,
+        });
       }
       allRaw.push(...collectRawClasses(uri, text));
     }
@@ -187,6 +249,7 @@ export class WorkspaceIndex {
 
     this.events = events;
     this.labels = labels;
+    this.patternUsages = patternUsages;
     this.schemas = schemas;
     this.persons = buildPersonIndex(allPersons, allDefaultNames);
     this._hasEventSyntax = hasEventSyntax;

@@ -12,10 +12,21 @@ import {
   resolveTokenToPersonKeys,
 } from '../src/parsePersons';
 import { buildSchemaRegistry, collectRawClasses } from '../src/parseSchema';
+import { catalogForRoots, resolveLayers } from '../src/paperdollResolve';
+import { analyzePaperdoll, findRegisterInsert, optimizePaperdollEvent, planCursorInsert } from '../src/paperdollScript';
 import { PersonInfo } from '../src/types';
 import * as vscode from 'vscode';
 
 const MTS = 'M:\\MTS Project\\Mind the School\\game\\scripts';
+
+function applyTextEdits(text: string, edits: { start: number; end: number; text: string }[]): string {
+  const ordered = [...edits].sort((a, b) => b.start - a.start);
+  let out = text;
+  for (const edit of ordered) {
+    out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+  }
+  return out;
+}
 
 function read(rel: string): { uri: vscode.Uri; text: string } {
   const full = path.join(MTS, rel);
@@ -76,6 +87,156 @@ async function main() {
   );
   if (!personIndex.byKey.has('sakura_mori') || !personIndex.byKey.has('emiko_langley')) {
     console.error('missing core persons');
+    process.exitCode = 1;
+  }
+  const emikoDefaults = personIndex.byKey.get('emiko_langley')?.paperdollDefaults;
+  console.log('emiko paperdollDefaults', emikoDefaults);
+  if (emikoDefaults?.level !== '5') {
+    console.error('expected emiko paperdoll default level 5');
+    process.exitCode = 1;
+  }
+
+  const pdFile = read('events/new_management.rpy');
+  const pdLabels = parseLabelsInDocument(pdFile.uri, pdFile.text);
+  const poseLine = pdFile.text.split('\n').findIndex((l) => l.includes('pose = "10"') && l.includes('shining'));
+  const paper = analyzePaperdoll(pdFile.text, pdLabels, poseLine, 8, personIndex);
+  const emikoDoll = paper.scene.dolls.find((d) => d.variable === 'emiko');
+  console.log(
+    'paperdoll emiko',
+    emikoDoll?.values.pose,
+    emikoDoll?.values.mood,
+    emikoDoll?.values.level,
+    emikoDoll?.config.alignX,
+    emikoDoll?.config.zoom,
+    'bg',
+    paper.scene.background.kind,
+    paper.scene.background.step
+  );
+  if (
+    !emikoDoll ||
+    emikoDoll.personKey !== 'emiko_langley' ||
+    emikoDoll.values.pose !== '10' ||
+    emikoDoll.values.mood !== 'shining' ||
+    emikoDoll.values.level !== '5' ||
+    Math.abs(emikoDoll.config.alignX - 0.5) > 0.001 ||
+    Math.abs(emikoDoll.config.zoom - 2) > 0.001 ||
+    Math.abs(emikoDoll.config.alignY - -0.1) > 0.001
+  ) {
+    console.error('paperdoll simulation mismatch');
+    process.exitCode = 1;
+  }
+  const catalog = catalogForRoots([path.join(MTS, '..')]);
+  const layers = emikoDoll ? resolveLayers(catalog, emikoDoll.personKey, emikoDoll.values, emikoDoll.altKeys) : {};
+  console.log('paperdoll files', layers.body && path.basename(layers.body), layers.head && path.basename(layers.head));
+  if (!layers.body || !layers.head || !layers.body.includes('uniform') || !layers.head.includes('shining')) {
+    console.error('paperdoll resolve mismatch');
+    process.exitCode = 1;
+  }
+  const fixLine = pdFile.text.split('\n').findIndex((l) => l.includes('pose = "2",') && l.includes('shining'));
+  const fix = analyzePaperdoll(pdFile.text, pdLabels, fixLine, 8, personIndex);
+  const fixDoll = fix.scene.dolls.find((d) => d.variable === 'emiko');
+  console.log('sublabel emiko pose', fixDoll?.values.pose, 'zoom', fixDoll?.config.zoom);
+  if (!fixDoll || fixDoll.values.pose !== '2' || Math.abs(fixDoll.config.zoom - 2) > 0.001) {
+    console.error('paperdoll sublabel did not keep parent framing');
+    process.exitCode = 1;
+  }
+  const nurse = catalog.characters.get('linh_nguyen')?.bottoms.find((b) => b.outfit.startsWith('Nurse'));
+  console.log('spaced outfit', nurse?.outfit, nurse?.level);
+  if (!nurse || nurse.outfit !== 'Nurse 01' || nurse.level !== '$') {
+    console.error('spaced paperdoll outfit was not parsed');
+    process.exitCode = 1;
+  }
+  const registerSample = [
+    'label sample (**kwargs):',
+    '    $ begin_event(**kwargs)',
+    '    $ other = 1',
+    '',
+    'label other:',
+    '    $ begin_event(**kwargs)',
+    '',
+    '    $ emiko.register_paperdoll()',
+    '    $ image.show(0)',
+    '    if guided:',
+    '        $ aona.register_paperdoll(',
+    '            mood = "happy")',
+  ].join('\n');
+  const registerLabels = parseLabelsInDocument(vscode.Uri.file('sample.rpy'), registerSample);
+  const underBegin = findRegisterInsert(registerSample, registerLabels, 0, 'lily');
+  const appended = findRegisterInsert(registerSample, registerLabels, 5, 'lily');
+  const duplicate = findRegisterInsert(registerSample, registerLabels, 5, 'aona');
+  if (
+    !underBegin ||
+    underBegin.duplicate ||
+    underBegin.mode !== 'before-line' ||
+    underBegin.line !== 2 ||
+    !underBegin.blankBefore ||
+    !appended ||
+    appended.duplicate ||
+    appended.mode !== 'after-line' ||
+    appended.line !== 7 ||
+    !duplicate?.duplicate
+  ) {
+    console.error('register insert plan mismatch', underBegin, appended, duplicate);
+    process.exitCode = 1;
+  }
+  const cursorSample = [
+    'label sample:',
+    '    $ begin_event(**kwargs)',
+    '    $ emiko.display(PDAImage(pose = "1"))',
+    '    emiko.say "Hi"',
+    '',
+  ].join('\n');
+  const displayRow = '    $ emiko.display(PDAImage(pose = "1"))';
+  const inside = planCursorInsert(
+    cursorSample,
+    2,
+    displayRow.lastIndexOf(')'),
+    ['PDAPreset("close_body")'],
+    'emiko.display(PDAPreset("close_body"))'
+  );
+  const outside = planCursorInsert(
+    cursorSample,
+    4,
+    0,
+    ['PDAImage(mood = "happy")'],
+    'emiko.display(PDAImage(mood = "happy"))'
+  );
+  if (
+    !inside?.insideDisplay ||
+    inside.insertion !== ', PDAPreset("close_body")' ||
+    !outside ||
+    outside.insideDisplay ||
+    outside.insertion !== '    $ emiko.display(PDAImage(mood = "happy"))'
+  ) {
+    console.error('cursor insert plan mismatch', inside, outside);
+    process.exitCode = 1;
+  }
+  const optSample = [
+    'label sample (**kwargs):',
+    '    $ begin_event(**kwargs)',
+    '    $ emiko.display(PDAImage(pose = "12", mood = "happy"))',
+    '    $ emiko.display(PDAImage(pose = "12", mouth = "open"))',
+    '    if cond:',
+    '        $ emiko.display(PDAImage(pose = "1"))',
+    '    $ emiko.display(PDAImage(pose = "12"))',
+    '',
+    'label .later:',
+    '    $ emiko.display(PDAImage(pose = "12", mood = "happy"))',
+    '    $ emiko.display(PDAImage(pose = "3", mood = "happy"))',
+  ].join('\n');
+  const optLabels = parseLabelsInDocument(vscode.Uri.file('opt.rpy'), optSample);
+  const optimized = optimizePaperdollEvent(optSample, optLabels, 0);
+  const optText = applyTextEdits(optSample, optimized.edits);
+  const optLines = optText.split('\n');
+  if (
+    optimized.calls !== 1 ||
+    !optLines.some((row) => row.includes('PDAImage(mouth = "open")')) ||
+    !optLines.some((row) => row.includes('PDAImage(pose = "1")')) ||
+    !optLines.some((row) => row.includes('PDAImage(pose = "12")')) ||
+    optLines.filter((row) => row.includes('mood = "happy"')).length !== 1 ||
+    !optLines.some((row) => row.includes('PDAImage(pose = "3")'))
+  ) {
+    console.error('paperdoll optimize mismatch', optimized.fields, optimized.calls, optText);
     process.exitCode = 1;
   }
   if (resolveTokenToPersonKeys('headmaster', personIndex)[0] !== 'headmaster') {

@@ -3,6 +3,7 @@ import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
 import { EventDiagnostics } from './diagnostics';
 import { MtsImageHoverProvider } from './imageHover';
+import { MtsPaperdollHoverProvider } from './paperdollHover';
 import { WorkspaceIndex } from './indexer';
 import { PortraitDecorator } from './portraitDecorations';
 import { PortraitStore } from './portraitStore';
@@ -17,6 +18,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const diagnostics = new EventDiagnostics(index);
   const codeLens = new MtsCodeLensProvider(index);
   const imageHover = new MtsImageHoverProvider(index, context);
+  const paperdollHover = new MtsPaperdollHoverProvider(index, context);
   const portraits = new PortraitStore(context);
   new PortraitDecorator(index, context, portraits);
 
@@ -26,7 +28,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(RPY_SELECTOR, codeLens),
-    vscode.languages.registerHoverProvider(RPY_SELECTOR, imageHover)
+    vscode.languages.registerHoverProvider(RPY_SELECTOR, imageHover),
+    vscode.languages.registerHoverProvider(RPY_SELECTOR, paperdollHover)
   );
 
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.rpy');
@@ -49,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.fileName.endsWith('.rpy') && index.hasEventSyntax) {
-        diagnostics.refreshDocument(doc);
+        void diagnostics.refreshDocument(doc);
       }
     })
   );
@@ -60,13 +63,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       .getConfiguration('mtsEventManager')
       .get<boolean>('enableDiagnostics', true);
     diagnostics.setEnabled(enableDiag);
-    diagnostics.refreshAll();
-    // Also refresh open docs from latest buffer
-    for (const doc of vscode.workspace.textDocuments) {
-      if (doc.fileName.endsWith('.rpy')) {
-        diagnostics.refreshDocument(doc);
-      }
-    }
+    void diagnostics.refreshAll();
   });
 
   context.subscriptions.push(
@@ -75,7 +72,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const cfg = vscode.workspace.getConfiguration('mtsEventManager');
         diagnostics.setEnabled(cfg.get('enableDiagnostics', true));
         codeLens.refresh();
-        diagnostics.refreshAll();
+        void diagnostics.refreshAll();
       }
     })
   );

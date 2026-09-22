@@ -8,6 +8,7 @@ VS Code extension for *Mind the School* Ren'Py event authoring.
 - **Event → Label**: CodeLens on event definitions jumps to the scene label (including sublabels like `parent.sub`).
 - **+ Condition / + Selector / + Pattern**: insert snippets with tabstops. Class list is discovered dynamically from inheritance (`Condition` / `Selector` / …) across **all** `.rpy` files.
 - **Image preview**: CodeLens `🖼` opens a side panel carousel on click. Hovering the call line (or the line of the CodeLens) shows a large auto-rotating preview without opening a tab.
+- **Paperdolls**: CodeLens `🎭 Paperdoll` on `register_paperdoll` / `.display(...)` opens an editor. It composites body + head from `game/images/paperdoll`, previews framing (presets, align, zoom, flip) over the scene background, and can update the call or insert a new `display` / `register_paperdoll` line. Hover the call for a still of the resolved sprite.
 - **Diagnostics**: structural validation of event arguments against discovered `__init__` schemas.
 
 ## Usage

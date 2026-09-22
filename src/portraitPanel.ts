@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import sharp from 'sharp';
+import { loadSharp } from './sharpRuntime';
 import { WorkspaceIndex } from './indexer';
 import { personDisplayName } from './parsePersons';
 import { PortraitStore } from './portraitStore';
@@ -128,6 +128,10 @@ async function refresh(
 async function thumbDataUri(fsPath: string): Promise<string> {
   try {
     if (!fs.existsSync(fsPath)) {
+      return '';
+    }
+    const sharp = await loadSharp();
+    if (!sharp) {
       return '';
     }
     const buf = await sharp(fsPath).resize(40, 40, { fit: 'cover' }).png().toBuffer();

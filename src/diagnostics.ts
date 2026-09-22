@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
 import { findCallsByName, walkCalls } from './callParser';
+import { resolveSiteImages } from './codeLens';
+import { parseEventsInDocument } from './parseEvents';
+import { parseImageCallsInDocument } from './parseImageCalls';
+import { parseLabelsInDocument } from './parseLabels';
+import { getImageRoots, resolveImagesForCall } from './patternResolve';
 import { WorkspaceIndex } from './indexer';
-import { ClassSchema, EVENT_KINDS, ParsedCall } from './types';
+import { ClassSchema, EVENT_KINDS, ImageCallSite, ParsedCall } from './types';
 
 const EVENT_NAME_SET = new Set<string>(EVENT_KINDS);
 
 export class EventDiagnostics {
   private readonly collection: vscode.DiagnosticCollection;
   private enabled = true;
+  private readonly refreshGen = new Map<string, number>();
 
   constructor(private readonly index: WorkspaceIndex) {
     this.collection = vscode.languages.createDiagnosticCollection('mtsEventManager');
@@ -24,19 +30,20 @@ export class EventDiagnostics {
     this.collection.dispose();
   }
 
-  refreshAll(): void {
+  async refreshAll(): Promise<void> {
     if (!this.enabled || !this.index.hasEventSyntax) {
       this.collection.clear();
       return;
     }
-    for (const doc of vscode.workspace.textDocuments) {
-      if (doc.uri.scheme === 'file' && doc.fileName.endsWith('.rpy')) {
-        this.refreshDocument(doc);
-      }
-    }
+    await Promise.all(
+      vscode.workspace.textDocuments
+        .filter((doc) => doc.uri.scheme === 'file' && doc.fileName.endsWith('.rpy'))
+        .map((doc) => this.refreshDocument(doc))
+    );
   }
 
-  refreshDocument(doc: vscode.TextDocument): void {
+  async refreshDocument(doc: vscode.TextDocument): Promise<void> {
+    const key = doc.uri.toString();
     if (!this.enabled || !this.index.hasEventSyntax) {
       this.collection.delete(doc.uri);
       return;
@@ -44,6 +51,9 @@ export class EventDiagnostics {
     if (doc.uri.scheme !== 'file' || !doc.fileName.endsWith('.rpy')) {
       return;
     }
+
+    const gen = (this.refreshGen.get(key) ?? 0) + 1;
+    this.refreshGen.set(key, gen);
 
     const text = doc.getText();
     const diagnostics: vscode.Diagnostic[] = [];
@@ -59,7 +69,97 @@ export class EventDiagnostics {
       });
     }
 
+    await this.addMissingPatternImageWarnings(doc, text, diagnostics);
+    await this.addMissingCallImageWarnings(doc, text, diagnostics);
+    if (this.refreshGen.get(key) !== gen) {
+      return;
+    }
     this.collection.set(doc.uri, diagnostics);
+  }
+
+  private async addMissingPatternImageWarnings(
+    doc: vscode.TextDocument,
+    text: string,
+    diagnostics: vscode.Diagnostic[]
+  ): Promise<void> {
+    const roots = await getImageRoots();
+    if (roots.length === 0) {
+      return;
+    }
+    const events = parseEventsInDocument(doc.uri, text);
+    for (const ev of events) {
+      for (const pat of ev.patterns) {
+        const site: ImageCallSite = {
+          kind: 'pattern_def',
+          range: pat.range,
+          patternKey: pat.patternKey,
+          steps: [],
+          eventLabelName: ev.labelName,
+        };
+        const images = await resolveImagesForCall(site, [pat], { maxResults: 1 });
+        if (images.length > 0) {
+          continue;
+        }
+        const diag = new vscode.Diagnostic(
+          pat.range,
+          `No images found for Pattern "${pat.patternKey}" (${pat.pathTemplate}).`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        diag.source = 'MTS Event Manager';
+        diagnostics.push(diag);
+      }
+    }
+  }
+
+  private async addMissingCallImageWarnings(
+    doc: vscode.TextDocument,
+    text: string,
+    diagnostics: vscode.Diagnostic[]
+  ): Promise<void> {
+    const roots = await getImageRoots();
+    if (roots.length === 0) {
+      return;
+    }
+    const labels = parseLabelsInDocument(doc.uri, text);
+    const sites = parseImageCallsInDocument(text, labels);
+    for (const site of sites) {
+      if (site.kind === 'convert_pattern') {
+        continue;
+      }
+      const missingSteps: number[] = [];
+      if (site.steps.length > 1) {
+        for (const step of site.steps) {
+          const images = await resolveSiteImages(
+            this.index,
+            doc,
+            { ...site, steps: [step] },
+            labels,
+            { maxResults: 1 }
+          );
+          if (images.length === 0) {
+            missingSteps.push(step);
+          }
+        }
+        if (missingSteps.length === 0) {
+          continue;
+        }
+      } else {
+        const images = await resolveSiteImages(this.index, doc, site, labels, { maxResults: 1 });
+        if (images.length > 0) {
+          continue;
+        }
+        if (site.steps.length === 1) {
+          missingSteps.push(site.steps[0]);
+        }
+      }
+      const diag = new vscode.Diagnostic(
+        site.range,
+        missingImageMessage(site, missingSteps),
+        vscode.DiagnosticSeverity.Warning
+      );
+      diag.source = 'MTS Event Manager';
+      diagnostics.push(diag);
+    }
   }
 
   private validateEventCall(call: ParsedCall, diagnostics: vscode.Diagnostic[]): void {
@@ -80,7 +180,7 @@ export class EventDiagnostics {
       positional++;
     }
 
-    if (labelArg) {
+    if (labelArg && call.name !== 'EventSelect') {
       const m = labelArg.text.trim().match(/^['"]([\s\S]*)['"]$/);
       const labelName = m ? m[1] : undefined;
       if (labelName && !this.index.getLabel(labelName)) {
@@ -179,5 +279,40 @@ export class EventDiagnostics {
         vscode.DiagnosticSeverity.Warning
       )
     );
+  }
+}
+
+function missingImageMessage(site: ImageCallSite, missingSteps: number[]): string {
+  const stepsLabel =
+    missingSteps.length === 1
+      ? `step ${missingSteps[0]}`
+      : missingSteps.length > 1
+        ? `steps ${missingSteps.join(', ')}`
+        : undefined;
+  switch (site.kind) {
+    case 'show':
+      return stepsLabel
+        ? `No images found for ${site.variableName ?? 'image'}.show(${missingSteps[0]}).`
+        : `No images found for ${site.variableName ?? 'image'}.show().`;
+    case 'show_image':
+      return stepsLabel
+        ? `No images found for Image_Series.show_image ${stepsLabel}.`
+        : 'No images found for Image_Series.show_image.';
+    case 'show_pattern':
+      return site.patternKey
+        ? `No images found for show_pattern("${site.patternKey}").`
+        : 'No images found for show_pattern.';
+    case 'set_background':
+      return stepsLabel
+        ? `No images found for set_background ${stepsLabel}.`
+        : 'No images found for set_background.';
+    case 'set_background_path':
+      return site.literalPath
+        ? `No images found for "${site.literalPath}".`
+        : 'No images found for set_background path.';
+    default:
+      return site.patternKey
+        ? `No images found for Pattern "${site.patternKey}".`
+        : 'No images found.';
   }
 }

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { resolveSiteImages } from './codeLens';
 import { showImagePreviewCarousel } from './imagePreview';
 import { WorkspaceIndex } from './indexer';
+import { showPaperdollEditor } from './paperdollPanel';
 import { showPortraitPanel } from './portraitPanel';
 import { PortraitStore } from './portraitStore';
 import { pickAndInsertSchema } from './snippets';
@@ -28,6 +29,7 @@ interface RawImageCall {
   patternKey?: string;
   steps: number[];
   literalPath?: string;
+  eventLabelName?: string;
 }
 
 function mkPosition(p: RawPos): vscode.Position {
@@ -55,7 +57,7 @@ export function registerCommands(
         const pos = mkPosition(rawPos);
         const locations = (rawLocations ?? []).map(mkLocation);
         if (locations.length === 0) {
-          void vscode.window.showInformationMessage('No event definitions found.');
+          void vscode.window.showInformationMessage('No definitions found.');
           return;
         }
         await vscode.commands.executeCommand(
@@ -124,6 +126,7 @@ export function registerCommands(
           patternKey: raw.patternKey,
           steps: raw.steps ?? [],
           literalPath: raw.literalPath,
+          eventLabelName: raw.eventLabelName,
         };
         const infos = await resolveSiteImages(index, doc, site);
         const title =
@@ -138,5 +141,12 @@ export function registerCommands(
     vscode.commands.registerCommand('mtsEventManager.customPortraits', () => {
       showPortraitPanel(context, index, store);
     }),
+    vscode.commands.registerCommand(
+      'mtsEventManager.editPaperdoll',
+      async (uriStr?: string, line?: number, character?: number) => {
+        const uri = uriStr ? vscode.Uri.parse(uriStr) : undefined;
+        await showPaperdollEditor(context, index, uri, line, character);
+      }
+    ),
   );
 }

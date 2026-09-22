@@ -2,10 +2,9 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import sharp from 'sharp';
+import { loadSharp } from './sharpRuntime';
 import { GIFEncoder, quantize, applyPalette } from 'gifenc';
-import { resolveSiteImages } from './codeLens';
-import { parseImageCallsInDocument } from './parseImageCalls';
+import { collectDocumentImageSites, resolveSiteImages } from './codeLens';
 import { formatPatternParams } from './patternResolve';
 import { WorkspaceIndex } from './indexer';
 import { ResolvedImageInfo } from './types';
@@ -35,11 +34,10 @@ export class MtsImageHoverProvider implements vscode.HoverProvider {
       return undefined;
     }
 
-    const labels = this.index.getLabelsForUri(document.uri);
-    const sites = parseImageCallsInDocument(document.getText(), labels);
+    const sites = collectDocumentImageSites(document, this.index);
 
     const match =
-      sites.find((s) => s.range.start.line === position.line) ??
+      sites.find((s) => s.range.contains(position) || s.range.start.line === position.line) ??
       sites.find((s) => s.range.start.line === position.line + 1);
     if (!match || token.isCancellationRequested) {
       return undefined;
@@ -121,6 +119,10 @@ async function buildHoverPreview(
   totalCount: number,
   delaySec: number
 ): Promise<{ cacheDir: string; file: string }> {
+  const sharp = await loadSharp();
+  if (!sharp) {
+    throw new Error('sharp unavailable');
+  }
   await vscode.workspace.fs.createDirectory(context.globalStorageUri);
   const cacheDir = path.join(context.globalStorageUri.fsPath, 'hover-preview');
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -177,6 +179,10 @@ async function renderSlide(
   totalCount: number,
   delaySec: number
 ): Promise<Uint8Array> {
+  const sharp = await loadSharp();
+  if (!sharp) {
+    throw new Error('sharp unavailable');
+  }
   const left = await sharp(info.fsPath)
     .resize(HOVER_WIDTH, HOVER_HEIGHT, {
       fit: 'contain',

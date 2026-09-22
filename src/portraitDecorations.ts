@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import sharp from 'sharp';
+import { loadSharp } from './sharpRuntime';
 import { WorkspaceIndex } from './indexer';
 import { labelAtLine } from './parseImageCalls';
 import { parseDialoguePortraitSites, personDisplayName, withExtraPersonKeys } from './parsePersons';
@@ -166,6 +166,10 @@ export class PortraitDecorator {
     const out = path.join(this.cacheDir, `${keys.join('__')}-${hash}.png`);
     if (fs.existsSync(out)) {
       return vscode.Uri.file(out);
+    }
+    const sharp = await loadSharp();
+    if (!sharp) {
+      throw new Error('sharp unavailable');
     }
     if (files.length === 1) {
       await sharp(files[0].fsPath)

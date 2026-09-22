@@ -13,6 +13,13 @@ export async function getImageRoots(): Promise<string[]> {
 
   for (const folder of folders) {
     await collectGameDirs(folder.uri.fsPath, roots, 0);
+    // Workspace is the `game/` folder itself (no nested `game/` to discover).
+    addModImageRoots(folder.uri.fsPath, roots);
+    // Standalone mod folder opened as workspace: images/… lives at the folder root.
+    const imagesDir = path.join(folder.uri.fsPath, 'images');
+    if (fs.existsSync(imagesDir) && fs.statSync(imagesDir).isDirectory()) {
+      roots.add(folder.uri.fsPath);
+    }
   }
 
   const extra = vscode.workspace
@@ -54,9 +61,31 @@ async function collectGameDirs(dir: string, out: Set<string>, depth: number): Pr
     const full = path.join(dir, ent.name);
     if (ent.name === 'game') {
       out.add(full);
+      addModImageRoots(full, out);
     } else {
       await collectGameDirs(full, out, depth + 1);
     }
+  }
+}
+
+/**
+ * Wiki (Images §4 / Modding §2): Pattern paths stay `images/…`; files live under
+ * `game/mods/<ModFolder>/images/…`. Each mod folder is its own root so the same
+ * relative path matches.
+ */
+function addModImageRoots(gameDir: string, out: Set<string>): void {
+  const modsDir = path.join(gameDir, 'mods');
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(modsDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory() || ent.name.startsWith('.')) {
+      continue;
+    }
+    out.add(path.join(modsDir, ent.name));
   }
 }
 
@@ -64,7 +93,10 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Pattern templates often say .webp while assets ship as .png — treat image exts as interchangeable. */
+/** Strip leading slashes so `/images/…` matches files under `images/…`. */
+export function normalizePatternPath(pathTemplate: string): string {
+  return pathTemplate.replace(/\\/g, '/').replace(/^\/+/, '');
+}
 const IMAGE_EXT_ALT = '(?:webp|png|jpe?g|gif|webm)';
 
 function escapeRegExpFlexibleExt(s: string): string {
@@ -75,7 +107,7 @@ export function templateToRegex(
   pathTemplate: string,
   fixed: Record<string, string>
 ): RegExp {
-  let t = pathTemplate.replace(/\\/g, '/');
+  let t = normalizePatternPath(pathTemplate);
   for (const [key, value] of Object.entries(fixed)) {
     t = t.split(`<${key}>`).join(value);
   }
@@ -99,8 +131,8 @@ export function extractPatternParams(
   relativePath: string,
   fixed: Record<string, string> = {}
 ): Record<string, string> {
-  const template = pathTemplate.replace(/\\/g, '/');
-  const rel = relativePath.replace(/\\/g, '/');
+  const template = normalizePatternPath(pathTemplate);
+  const rel = normalizePatternPath(relativePath);
   const placeholderRe = /<([^>]+)>/g;
   const names: string[] = [];
   let m: RegExpExecArray | null;
@@ -184,8 +216,10 @@ function toInfo(
 
 export async function resolveImagesForCall(
   site: ImageCallSite,
-  patterns: EventPatternInfo[]
+  patterns: EventPatternInfo[],
+  options?: { maxResults?: number }
 ): Promise<ResolvedImageInfo[]> {
+  const limit = options?.maxResults ?? MAX_RESULTS;
   const roots = await getImageRoots();
   if (roots.length === 0) {
     return [];
@@ -230,7 +264,7 @@ export async function resolveImagesForCall(
             if (regex.test(rel) && !seen.has(file)) {
               seen.add(file);
               results.push(toInfo(file, rel, pat, fixed));
-              if (results.length >= MAX_RESULTS) {
+              if (results.length >= limit) {
                 return results;
               }
             }
@@ -244,7 +278,7 @@ export async function resolveImagesForCall(
 }
 
 function pathTemplateDirHint(template: string, fixed: Record<string, string>): string | undefined {
-  let t = template.replace(/\\/g, '/');
+  let t = normalizePatternPath(template);
   for (const [key, value] of Object.entries(fixed)) {
     t = t.split(`<${key}>`).join(value);
   }
@@ -258,7 +292,7 @@ function pathTemplateDirHint(template: string, fixed: Record<string, string>): s
 }
 
 function resolveLiteral(rel: string, roots: string[]): ResolvedImageInfo[] {
-  const normalized = rel.replace(/\\/g, '/').replace(/^\//, '');
+  const normalized = normalizePatternPath(rel);
   for (const root of roots) {
     const candidates = [
       path.join(root, normalized),

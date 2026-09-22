@@ -1,8 +1,8 @@
 {
   "name": "mts-event-manager",
   "displayName": "MTS Event Manager",
-  "description": "Event-Label navigation, snippet helpers, image preview and validation for Mind the School RenPy events.",
-  "version": "0.4.0",
+    "description": "Event-Label navigation, snippet helpers, image and paperdoll preview for Mind the School RenPy events.",
+  "version": "0.5.7",
   "publisher": "mts",
   "engines": {
     "vscode": "^1.85.0"
@@ -53,6 +53,10 @@
       {
         "command": "mtsEventManager.customPortraits",
         "title": "MTS: Custom Portraits"
+      },
+      {
+        "command": "mtsEventManager.editPaperdoll",
+        "title": "MTS: Edit Paperdoll"
       }
     ],
     "configuration": {
@@ -73,6 +77,11 @@
           "default": true,
           "description": "Show CodeLens and hover image previews on pattern show calls."
         },
+        "mtsEventManager.enablePaperdoll": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show paperdoll CodeLens, hover previews, and the paperdoll editor on register/display calls."
+        },
         "mtsEventManager.enablePortraits": {
           "type": "boolean",
           "default": true,
@@ -91,7 +100,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional base folders for resolving Pattern image paths (absolute or workspace-relative). Workspace **/game folders are always included."
+          "description": "Additional base folders for resolving Pattern image paths (absolute or workspace-relative). Workspace **/game folders and game/mods/* (mod asset roots) are always included."
         }
       }
     }

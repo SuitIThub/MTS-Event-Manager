@@ -125,6 +125,21 @@ export function parseImageCallsInDocument(
     }
   };
 
+  const addConvertPattern = () => {
+    CONVERT_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CONVERT_RE.exec(text)) !== null) {
+      const range = lineRange(text, m.index, m[0].length);
+      sites.push({
+        kind: 'convert_pattern',
+        range,
+        variableName: m[1],
+        patternKey: m[2],
+        steps: [],
+      });
+    }
+  };
+
   const addShowPattern = () => {
     SHOW_PATTERN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -173,6 +188,7 @@ export function parseImageCallsInDocument(
 
   addShow();
   addShowImage();
+  addConvertPattern();
   addShowPattern();
   addSetBgIndex();
   addSetBgPath();

@@ -28,6 +28,17 @@ export interface EventPatternInfo {
   patternKey: string;
   pathTemplate: string;
   altKeys: string[];
+  range: vscode.Range;
+}
+
+/** convert_pattern / show_pattern usage of a named Pattern. */
+export interface PatternUsage {
+  kind: 'convert_pattern' | 'show_pattern';
+  patternKey: string;
+  /** Scene label containing the call (sublabels included). */
+  labelName: string;
+  uri: vscode.Uri;
+  range: vscode.Range;
 }
 
 export interface EventDefinition {
@@ -48,6 +59,8 @@ export type ImageCallKind =
   | 'show'
   | 'show_image'
   | 'show_pattern'
+  | 'convert_pattern'
+  | 'pattern_def'
   | 'set_background'
   | 'set_background_path';
 
@@ -67,6 +80,11 @@ export interface ImageCallSite {
   paramConstraints?: Record<string, string[]>;
   /** Literal relative path for set_background("images/...") */
   literalPath?: string;
+  /**
+   * Event label that owns this Pattern. Used for `pattern_def` sites, which live
+   * in `init python` Event() constructors rather than a scene label.
+   */
+  eventLabelName?: string;
 }
 
 /** One resolved image file with pattern placeholder values. */
@@ -87,6 +105,8 @@ export interface PersonInfo {
   firstName: string;
   lastName: string;
   group: string;
+  /** Values merged over the house paperdoll seeds, from `paperdollDefaults`. */
+  paperdollDefaults?: Record<string, string>;
 }
 
 export interface DialoguePortraitSite {

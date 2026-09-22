@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { findCallsByName } from './callParser';
 import { topLevelLabelSpan } from './parseImageCalls';
 import { readIdentifier, readStringLiteral } from './scan';
-import { DialoguePortraitSite, LabelDefinition, PersonInfo } from './types';
+import { DialoguePortraitSite, LabelDefinition, ParsedCall, PersonInfo } from './types';
 
 const SPEECH_METHODS = new Set(['say', 'think', 'whisper', 'shout']);
 
@@ -94,9 +94,30 @@ export function parsePersonsInDocument(text: string): PersonInfo[] {
     if (!key) {
       continue;
     }
-    results.push({ key, firstName, lastName, group });
+    results.push({
+      key,
+      firstName,
+      lastName,
+      group,
+      paperdollDefaults: readPaperdollDefaults(personCall),
+    });
   }
   return results;
+}
+
+function readPaperdollDefaults(call: ParsedCall): Record<string, string> | undefined {
+  const arg = call.args.find((a) => a.name === 'paperdollDefaults');
+  if (!arg) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  const re =
+    /['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*:\s*(?:(['"])([^'"]*)\2|(-?\d+(?:\.\d+)?))/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(arg.text)) !== null) {
+    out[m[1]] = m[3] !== undefined ? m[3] : m[4];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function parseDefaultNames(
