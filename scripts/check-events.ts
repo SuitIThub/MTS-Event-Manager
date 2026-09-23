@@ -13,6 +13,7 @@ import { makeIndex } from './testIndex';
 import { createPaperdollTracer } from '../src/paperdollScript';
 import { parseBackgroundCall, planBackgroundEdit, planRemoveLine } from '../src/backgroundOps';
 import { parseImageCallsInDocument } from '../src/parseImageCalls';
+import { planRandomSayText } from '../src/randomSayOps';
 
 /**
  * Event check, trigger simulator, stat/end edits and the overview against the real game
@@ -195,6 +196,33 @@ async function main() {
     const rm = planRemoveLine(demo, 0, (r) => /\.show\(/.test(r));
     check(!('error' in rm) && rm.text === '    luna "Hi"\n', 'image statement removal deletes exactly its line');
     check('error' in planRemoveLine(demo, 1, (r) => /\.show\(/.test(r)), 'refuses to remove a line that is not an image statement');
+  }
+
+  // ── random_say: editing one alternative's text round-trips over the whole game ──
+  {
+    let alts = 0;
+    let altFail = 0;
+    for (const f of walk(GAME)) {
+      const text = fs.readFileSync(f, 'utf8');
+      const labs = parseLabelsInDocument(vscode.Uri.file(f), text);
+      text.split('\n').forEach((row, ln) => {
+        if (!/\brandom_say\s*\(/.test(row) || /^\s*(#|def\b)/.test(row)) return;
+        const tlAt = buildEventTimeline(text, labs, index.getPersonIndex(), ln, () => ({}));
+        const stop = tlAt.stops.find((s) => s.line === ln && s.alternatives);
+        for (const a of stop?.alternatives ?? []) {
+          if (a.argIndex === undefined) continue;
+          const edited = planRandomSayText(text, ln, a.argIndex, a.text + ' — "edited"');
+          const back = 'error' in edited ? edited : planRandomSayText(edited.text, ln, a.argIndex, a.text);
+          if ('error' in back || back.text !== text) { altFail++; console.log('FAIL random_say', path.basename(f), ln + 1, a.argIndex, 'error' in back ? back.error : 'differs'); }
+          alts++;
+        }
+      });
+    }
+    check(alts >= 3 && altFail === 0, `${alts} random_say alternatives: edit + revert byte-identical, ${altFail} failures`);
+    const demo = '        $ random_say(\n            "one [topic]",\n            ("two", topic_set == 1),\n            (0.2, ("three", 2)),\n            person = character.sgirl)\n';
+    const e2 = planRandomSayText(demo, 0, 2, 'drei');
+    check(!('error' in e2) && e2.text.includes('(0.2, ("drei", 2))') && e2.text.includes('"one [topic]"') && e2.text.includes('("two", topic_set == 1)'), 'a weighted tuple alternative changes only its text');
+    check('error' in planRandomSayText(demo, 0, 3, 'x'), 'the person= keyword is not an alternative');
   }
 
   // ── Performance guards (these once blocked the extension host for seconds per edit) ──

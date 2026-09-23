@@ -61,6 +61,8 @@ export interface SayAlternative {
   condition?: string;
   /** Image shown with this alternative (`image=` series + the alternative's step). */
   image?: ImageRef;
+  /** Position of this alternative among the random_say call's arguments (for editing). */
+  argIndex?: number;
 }
 
 export type MarkerKind = 'image' | 'paperdoll' | 'background' | 'menu' | 'plus' | 'stats' | 'end';
@@ -174,7 +176,7 @@ type Raw =
       t: 'randomSay';
       line: number;
       character: number;
-      alternatives: { text: string; speaker?: string; step?: number; condition?: string }[];
+      alternatives: { text: string; speaker?: string; step?: number; condition?: string; argIndex: number }[];
       person?: string;
       imageVar?: string;
       patternKey?: string;
@@ -474,13 +476,19 @@ function parseRandomSay(
   labels: LabelDefinition[],
   call: import('./pyCall').PyCall,
   line: number
-): { alternatives: { text: string; speaker?: string; step?: number; condition?: string }[]; person?: string; imageVar?: string; patternKey?: string } {
+): { alternatives: { text: string; speaker?: string; step?: number; condition?: string; argIndex: number }[]; person?: string; imageVar?: string; patternKey?: string } {
   const person = call.args.find((a) => a.name === 'person')?.value.trim();
   const imageVar = call.args.find((a) => a.name === 'image')?.value.trim();
-  const alternatives = call.args
-    .filter((a: PyArg) => !a.name && !a.star)
-    .map((a) => parseAlternative(a.value))
-    .filter((a): a is NonNullable<ReturnType<typeof parseAlternative>> => !!a);
+  const alternatives: { text: string; speaker?: string; step?: number; condition?: string; argIndex: number }[] = [];
+  call.args.forEach((a: PyArg, argIndex) => {
+    if (a.name || a.star) {
+      return;
+    }
+    const alt = parseAlternative(a.value);
+    if (alt) {
+      alternatives.push({ ...alt, argIndex });
+    }
+  });
   const patternKey =
     imageVar && /^[A-Za-z_][A-Za-z0-9_]*$/.test(imageVar) ? resolvePatternKeyForVariable(text, labels, imageVar, line) : undefined;
   return { alternatives, person, imageVar: imageVar && /^[A-Za-z_][A-Za-z0-9_]*$/.test(imageVar) ? imageVar : undefined, patternKey };
@@ -916,6 +924,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
           speaker: a.speaker ?? raw.person,
           condition: a.condition,
           image: toImage(a.step),
+          argIndex: a.argIndex,
         })),
       });
       return;

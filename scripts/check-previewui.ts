@@ -425,5 +425,49 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
   check(between < 0 || found.timeline.stops[stopAtScriptLine(found.timeline, dlabels, between)].line === target, "a statement line maps to the next stop after it");
 }
 
+// Dialogue text editing: visible for empty (new) lines, edits the raw script text.
+{
+  const mk = (index: number, line: number, text: string, rawText: string) => ({ index, line, kind: 'dialog', speaker: 'luna', speechType: 'say', text, rawText, names: ['Luna'], portraits: [], cg: '', bg: '', bgSplit: false, bgBlur: 0, dolls: [], src: 'luna "' + rawText + '"', personKeys: [] });
+  const stops = [mk(0, 10, 'Hi ah!', 'Hi [topic]!'), mk(1, 11, '', '')];
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'txt', stops, markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false } }));
+  const cap = byId.get('caption')!;
+  const input = () => cap.all().find((e) => e.tagName === 'INPUT');
+  cap.all().find((e) => e.tagName === 'BUTTON' && e._t === '✏')!.click();
+  check(input()?.value === 'Hi [topic]!', `✏ edits the raw text with its [placeholders] (${input()?.value})`);
+  posted.length = 0;
+  input()!.value = 'Hi [topic], again!';
+  input()!.dispatch('blur');
+  const ed = posted.pop();
+  check(ed?.type === 'editText' && ed.text === 'Hi [topic], again!' && ed.line === 10, `clicking away saves the change (${JSON.stringify(ed)})`);
+  byId.get('next')!.click();
+  const ph = cap.all().find((e) => e.className === 'txt placeholder');
+  check(!!ph && ph._t.includes('Write the line'), 'an empty line shows a placeholder');
+  ph!.click();
+  check(!!input() && input()!.value === '', 'one click on the placeholder opens the input');
+  input()!.dispatch('blur');
+  check(!posted.some((m) => m.type === 'editText' && m.line === 11), 'leaving an untouched input writes nothing');
+  // After "＋ Dialogue": the new line opens for editing by itself.
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'txt', stops, markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false, editLine: 11 } }));
+  check(byId.get('counter')!.textContent.startsWith('2 /') && !!input(), 'a newly inserted line is selected and in edit mode');
+}
+
+// random_say alternatives: each one editable (raw text, its own argument).
+{
+  const st = { index: 0, line: 204, kind: 'dialog', speaker: 'sgirl', speechType: 'say', text: 'Ah!!! my ah!', rawText: 'Ah!!! my [topic]!', names: [], portraits: [], cg: '', bg: '', bgSplit: false, bgBlur: 0, dolls: [], src: '$ random_say(', personKeys: [],
+    alternatives: [{ text: 'Ah!!! my ah!', rawText: 'Ah!!! my [topic]!', argIndex: 0, who: '', condition: '' }, { text: 'Eek!', rawText: 'Eek!', argIndex: 2, who: '', condition: 'topic_set == 1' }] };
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'rs', stops: [st], markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false } }));
+  const cap = byId.get('caption')!;
+  cap.all().find((e) => e.tagName === 'BUTTON' && e._t === '▶')!.click();
+  cap.all().find((e) => e.tagName === 'BUTTON' && e._t === '✏')!.click();
+  const input = cap.all().find((e) => e.tagName === 'INPUT');
+  check(input?.value === 'Eek!', 'the shown alternative opens for editing');
+  posted.length = 0;
+  input!.value = 'Eek! Out!';
+  input!.dispatch('keydown');
+  input!.listeners.keydown?.forEach((fn) => fn({ key: 'Enter', preventDefault() {} }));
+  const m = posted.pop();
+  check(m?.type === 'editAltText' && m.argIndex === 2 && m.text === 'Eek! Out!' && m.line === 204, `Enter posts editAltText for that argument (${JSON.stringify(m)})`);
+}
+
 console.log(`preview UI problems: ${problems}`);
 process.exitCode = problems ? 1 : 0;

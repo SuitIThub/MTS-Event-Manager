@@ -51,6 +51,7 @@ import { initialState, simulate } from './eventSimulator';
 import { DEFAULT_STATE, GameState } from './conditionEval';
 import { planEndType, planStatOp, StatOp } from './statsOps';
 import { BgSpec, parseBackgroundCall, planBackgroundEdit, planRemoveLine } from './backgroundOps';
+import { planRandomSayText } from './randomSayOps';
 
 interface Session {
   uri: vscode.Uri;
@@ -458,6 +459,12 @@ async function onMessage(
       step: parseSteps(msg.steps)[0],
       pause: !!msg.pause,
     });
+    return;
+  }
+  if (msg.type === 'editAltText') {
+    await runLinePlan(context, index, store, Number(msg.line ?? 0), String(msg.src ?? ''), 'Timeline: edit random_say line', (text, l) =>
+      planRandomSayText(text, l, Number(msg.argIndex ?? -1), String(msg.text ?? ''))
+    );
     return;
   }
   if (msg.type === 'imgRemove') {
@@ -1015,6 +1022,9 @@ async function plusInsert(
   const ok = await applyReversibleEdit(doc.uri, edit, `Timeline: insert ${snippet.label}`);
   if (ok) {
     session.line = anchor.lineNumber + snippet.anchorOffset;
+    if (kind === 'dialog') {
+      pendingEditLine = session.line;
+    }
     await publish(context, index, store);
     const ed = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
     if (snippet.cursor) {
@@ -1181,6 +1191,9 @@ async function sendBgEditor(index: WorkspaceIndex, target: vscode.WebviewPanel, 
     positionalOptions: parsed.positionalOptions,
   });
 }
+
+/** Dialogue line whose text the next publish opens for editing (a new "＋ Dialogue"). */
+let pendingEditLine: number | undefined;
 
 /** Stop the next publish should show (set by revealInEventTimeline). */
 let pendingFocusStop: number | undefined;
@@ -1691,8 +1704,10 @@ interface StopView {
   legacyScene: boolean;
   /** The image an image/video stop shows (with its show_image step position). */
   image?: ImageRef;
+  /** The spoken text as written (`[topic]` not filled in) — what the text editor edits. */
+  rawText: string;
   /** random_say alternatives, with their own speaker and image. */
-  alternatives?: { text: string; who: string; condition: string; cg?: string }[];
+  alternatives?: { text: string; rawText: string; argIndex?: number; who: string; condition: string; cg?: string }[];
   /** Trimmed source line — fingerprint used to re-locate the line after unsaved edits. */
   src: string;
   dolls: DollView[];
@@ -1857,6 +1872,8 @@ async function publish(
       ? await Promise.all(
           stop.alternatives.map(async (a) => ({
             text: interpolate(a.text, timeline.values),
+            rawText: a.text,
+            argIndex: a.argIndex,
             who: a.speaker ? normalizeSpeakerToken(a.speaker) : '',
             condition: a.condition ?? '',
             cg: a.image ? await resolveImageRef(index, doc, labels, a.image, timeline.eventLabel, timeline.values) : undefined,
@@ -1875,6 +1892,7 @@ async function publish(
       speaker: stop.speaker ?? '',
       speechType: stop.speechType ?? 'say',
       text: interpolate(stop.text, timeline.values),
+      rawText: stop.text,
       alternatives,
       names,
       portraits,
@@ -1899,6 +1917,8 @@ async function publish(
   const markers = timeline.markers.map((m) => markerView(m, srcLines));
   const current = pendingFocusStop ?? stopIndexForLine(timeline, session.line);
   pendingFocusStop = undefined;
+  const editLineNow = pendingEditLine;
+  pendingEditLine = undefined;
   const base = index.getPersonIndex();
   const characters = [...base.byKey.keys()]
     .map((k) => ({ key: k, label: personDisplayName(k, base) }))
@@ -1915,6 +1935,7 @@ async function publish(
     valueOptions: valueOptionsFor(index, timeline.eventLabel, timeline.branches, timeline.values, await patternValuesFor(index, timeline.eventLabel)),
     current: Math.max(0, current),
     keep: keepPosition,
+    editLine: editLineNow,
     session: { uri: session.uri.toString(), line: session.line, selections: session.selections, values: session.values },
     missing: stops.length === 0,
   });
@@ -2235,6 +2256,7 @@ function html(webview: Pick<vscode.Webview, 'cspSource'>): string {
   .caption .pic { width: 34px; height: 34px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
   .caption .who { font-weight: 600; white-space: nowrap; }
   .caption .txt { color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; }
+  .caption .txt.placeholder { color: var(--vscode-descriptionForeground); font-style: italic; cursor: pointer; border-bottom: 1px dashed var(--vscode-descriptionForeground); }
   .values { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--vscode-panel-border); font-size: 11px; }
   .values label { display: flex; gap: 4px; align-items: center; color: var(--vscode-descriptionForeground); }
   .values select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); font-size: 11px; max-width: 160px; }
@@ -2505,6 +2527,30 @@ function renderAltCaption(stop) {
   nav.appendChild(prev); nav.appendChild(count); nav.appendChild(next); cap.appendChild(nav);
   if (a.condition) { const c = document.createElement('span'); c.className = 'tag'; c.textContent = 'if ' + a.condition; cap.appendChild(c); }
   const txt = document.createElement('span'); txt.className='txt'; txt.textContent = a.text; cap.appendChild(txt);
+  if (a.argIndex != null) {
+    // Edit this alternative's text in random_say(…) (raw text, [placeholders] kept).
+    const edit = () => beginAltEdit(stop, a, txt);
+    txt.title = 'Double-click to edit this alternative'; txt.style.cursor = 'text';
+    txt.addEventListener('dblclick', edit);
+    const pen = document.createElement('button'); pen.className = 'alt'; pen.textContent = '✏'; pen.title = 'Edit this alternative (Enter saves, Esc cancels)';
+    pen.style.flex = '0 0 auto'; pen.style.marginLeft = 'auto';
+    pen.addEventListener('click', edit);
+    cap.appendChild(pen);
+  }
+}
+
+function beginAltEdit(stop, a, span) {
+  const raw = a.rawText != null ? a.rawText : a.text;
+  const input = document.createElement('input'); input.type = 'text'; input.value = raw; input.placeholder = 'Alternative text…';
+  input.style.flex = '1'; input.style.minWidth = '0';
+  input.style.background = 'var(--vscode-input-background)'; input.style.color = 'var(--vscode-input-foreground)';
+  input.style.border = '1px solid var(--vscode-focusBorder)';
+  span.replaceWith(input); input.focus(); input.select();
+  let done = false;
+  const commit = () => { if (done) return; done = true; vscode.postMessage({ type: 'editAltText', line: stop.line, src: stop.src, argIndex: a.argIndex, text: input.value }); };
+  const cancel = () => { if (done) return; done = true; renderAltCaption(stop); };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { e.preventDefault(); cancel(); } });
+  input.addEventListener('blur', () => { if (input.value !== raw) commit(); else cancel(); });
 }
 
 // View state survives the page reload VS Code does when the panel moves to another window.
@@ -2795,11 +2841,25 @@ function renderCaption(stop) {
     cap.appendChild(sel);
   }
   const txt = document.createElement('span'); txt.className='txt'; txt.textContent = stop.text || '';
-  if (stop.kind === 'dialog') { txt.title = 'Double-click to edit'; txt.style.cursor = 'text'; txt.addEventListener('dblclick', () => beginEdit(stop, txt)); }
+  if (stop.kind === 'dialog') {
+    txt.title = 'Double-click to edit the text'; txt.style.cursor = 'text';
+    txt.addEventListener('dblclick', () => beginEdit(stop, txt));
+    if (!stop.text) {
+      // A new/empty line: a visible placeholder, one click to write it.
+      txt.textContent = '✎ Write the line…'; txt.className = 'txt placeholder';
+      txt.addEventListener('click', () => beginEdit(stop, txt));
+    }
+  }
   cap.appendChild(txt);
+  if (stop.kind === 'dialog') {
+    const pen = document.createElement('button'); pen.className = 'alt'; pen.textContent = '✏'; pen.title = 'Edit the text (Enter saves, Esc cancels)';
+    pen.style.flex = '0 0 auto'; pen.style.marginLeft = 'auto';
+    pen.addEventListener('click', () => { const span = cap.querySelector('.txt'); if (span) beginEdit(stop, span); });
+    cap.appendChild(pen);
+  }
   if (stop.kind === 'dialog' || stop.kind === 'pause') {
     const del = document.createElement('button'); del.className = 'alt'; del.textContent = '🗑'; del.title = 'Delete this line';
-    del.style.marginLeft = 'auto'; del.style.flex = '0 0 auto';
+    del.style.marginLeft = stop.kind === 'dialog' ? '4px' : 'auto'; del.style.flex = '0 0 auto';
     del.addEventListener('click', () => vscode.postMessage({ type:'deleteStop', line: stop.line, src: stop.src }));
     cap.appendChild(del);
   }
@@ -2824,7 +2884,8 @@ function beginSpeakerEdit(stop, span) {
 }
 
 function beginEdit(stop, span) {
-  const input = document.createElement('input'); input.type = 'text'; input.value = stop.text || '';
+  const raw = stop.rawText != null ? stop.rawText : (stop.text || '');
+  const input = document.createElement('input'); input.type = 'text'; input.value = raw;
   input.style.flex = '1'; input.style.minWidth = '0';
   input.style.background = 'var(--vscode-input-background)'; input.style.color = 'var(--vscode-input-foreground)';
   input.style.border = '1px solid var(--vscode-focusBorder)';
@@ -2832,8 +2893,10 @@ function beginEdit(stop, span) {
   let done = false;
   const commit = () => { if (done) return; done = true; vscode.postMessage({ type:'editText', line: stop.line, src: stop.src, text: input.value }); };
   const cancel = () => { if (done) return; done = true; renderCaption(stop); };
+  input.placeholder = 'Dialogue text…';
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { e.preventDefault(); cancel(); } });
-  input.addEventListener('blur', () => cancel());
+  // Clicking elsewhere keeps what was typed (only Esc throws it away).
+  input.addEventListener('blur', () => { if (input.value !== raw) commit(); else cancel(); });
 }
 
 function labelForKind(k){ return k==='pause'?'Pause':k==='image'?'Image':k==='video'?'Video':'Narration'; }
@@ -2874,7 +2937,7 @@ function renderTimeline() {
     head.appendChild(who);
     card.appendChild(head);
     const kind = document.createElement('span'); kind.className = 'kind'; kind.textContent = labelForKind(stop.kind); card.appendChild(kind);
-    const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = stop.text || ''; card.appendChild(txt);
+    const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = stop.text || (stop.kind === 'dialog' ? '✎ (empty)' : ''); card.appendChild(txt);
     card.addEventListener('click', () => {
       goto(i);
       if ((stop.kind === 'image' || stop.kind === 'video') && stop.image) openImageFor(stop.line, stop.src, stop.image);
@@ -3558,6 +3621,14 @@ window.addEventListener('message', (event) => {
   renderEffects();
   refreshEditor();
   goto(current);
+  if (msg.editLine != null) {
+    const st = (msg.stops || []).find((s) => s.line === msg.editLine && s.kind === 'dialog');
+    if (st) {
+      goto(st.index);
+      const span = document.getElementById('caption').querySelector('.txt');
+      if (span) beginEdit(st, span);
+    }
+  }
 });
 window.addEventListener('resize', () => { if (anim) applyStyles(); else if (state && state.stops && state.stops[current]) renderStage(withAlt(state.stops[current])); });
 
