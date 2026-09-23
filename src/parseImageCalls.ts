@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { offsetToPosition } from './scan';
 import { LabelDefinition, ImageCallSite } from './types';
 
 const CONVERT_RE =
@@ -18,10 +19,7 @@ const SET_BG_PATH_RE =
   /\.set_background(?:_split)?\s*\(\s*['"]([^'"]+)['"]/g;
 
 function lineRange(text: string, matchIndex: number, matchLength: number): vscode.Range {
-  const before = text.slice(0, matchIndex);
-  const line = before.split('\n').length - 1;
-  const lastNl = before.lastIndexOf('\n');
-  const character = matchIndex - lastNl - 1;
+  const { line, character } = offsetToPosition(text, matchIndex);
   return new vscode.Range(line, character, line, character + Math.min(matchLength, 80));
 }
 
@@ -49,19 +47,48 @@ export function resolvePatternKeyForVariable(
 ): string | undefined {
   const { startLine, endLine } = topLevelLabelSpan(labels, beforeLine);
   let lastKey: string | undefined;
-  CONVERT_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = CONVERT_RE.exec(text)) !== null) {
-    const range = lineRange(text, m.index, m[0].length);
-    const line = range.start.line;
-    if (line < startLine || line >= beforeLine || line > endLine) {
+  for (const c of convertSites(text)) {
+    if (c.line < startLine || c.line >= beforeLine || c.line > endLine) {
       continue;
     }
-    if (m[1] === variableName) {
-      lastKey = m[2];
+    if (c.variable === variableName) {
+      lastKey = c.key;
     }
   }
   return lastKey;
+}
+
+/**
+ * `var = convert_pattern("key")` sites of a text, computed once per text. Resolving a
+ * pattern key used to rescan the whole file for every `image.show` (quadratic — seconds
+ * on big event files, on every edit).
+ */
+let convertCacheText: string | undefined;
+let convertCache: { line: number; variable: string; key: string }[] = [];
+function convertSites(text: string): { line: number; variable: string; key: string }[] {
+  if (text === convertCacheText) {
+    return convertCache;
+  }
+  const out: { line: number; variable: string; key: string }[] = [];
+  CONVERT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CONVERT_RE.exec(text)) !== null) {
+    out.push({ line: lineRange(text, m.index, m[0].length).start.line, variable: m[1], key: m[2] });
+  }
+  convertCacheText = text;
+  convertCache = out;
+  return out;
+}
+
+/** Top-level labels sorted by line, per labels array (labels are rebuilt per parse). */
+const topsCache = new WeakMap<LabelDefinition[], LabelDefinition[]>();
+function sortedTops(labels: LabelDefinition[]): LabelDefinition[] {
+  let tops = topsCache.get(labels);
+  if (!tops) {
+    tops = [...labels].sort((a, b) => a.range.start.line - b.range.start.line).filter((l) => !l.isSub);
+    topsCache.set(labels, tops);
+  }
+  return tops;
 }
 
 /** Line span of the top-level label that contains `line` (includes its sublabels). */
@@ -69,8 +96,7 @@ export function topLevelLabelSpan(
   labels: LabelDefinition[],
   line: number
 ): { startLine: number; endLine: number } {
-  const sorted = [...labels].sort((a, b) => a.range.start.line - b.range.start.line);
-  const tops = sorted.filter((l) => !l.isSub);
+  const tops = sortedTops(labels);
   let startLine = 0;
   let endLine = Number.MAX_SAFE_INTEGER;
   for (let i = 0; i < tops.length; i++) {

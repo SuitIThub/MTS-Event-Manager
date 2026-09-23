@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
+import { registerPreviewSerializer } from './previewPanel';
+import { registerOverviewSerializer } from './eventOverview';
 import { EventDiagnostics } from './diagnostics';
 import { MtsImageHoverProvider } from './imageHover';
 import { MtsPaperdollHoverProvider } from './paperdollHover';
@@ -25,6 +27,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(index, diagnostics, portraits);
 
   registerCommands(context, index, portraits);
+  // Reopen the event preview / overview after a window reload, in their last state.
+  context.subscriptions.push(registerPreviewSerializer(context, index, portraits), registerOverviewSerializer(context, index, portraits));
 
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(RPY_SELECTOR, codeLens),

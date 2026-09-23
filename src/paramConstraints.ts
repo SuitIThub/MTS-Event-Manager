@@ -2,7 +2,7 @@ import { LabelDefinition } from './types';
 import { topLevelLabelSpan } from './parseImageCalls';
 
 const GET_VALUE_RE =
-  /\$?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*get_value\s*\(\s*['"]([^'"]+)['"]/g;
+  /\$?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*get_(?:value|level)\s*\(\s*['"]([^'"]+)['"]/g;
 
 /**
  * From enclosing if/elif branches (and get_value aliases), build pattern placeholder
@@ -20,6 +20,9 @@ export function paramConstraintsForLine(
 
   for (const cond of conditions) {
     const key = varToKey.get(cond.variable) ?? cond.variable;
+    if (cond.numeric && !isLevelKey(key)) {
+      continue;
+    }
     if (out[key]) {
       out[key] = intersect(out[key], cond.values);
     } else {
@@ -80,6 +83,11 @@ function intersect(a: string[], b: string[]): string[] {
   return a.filter((x) => setB.has(x));
 }
 
+/** `$ var = get_value("key", …)` aliases in [startLine, endLine]: variable → selector key. */
+export function getValueAliases(text: string, startLine: number, endLine: number): Map<string, string> {
+  return parseGetValueMap(text, startLine, endLine);
+}
+
 function parseGetValueMap(
   text: string,
   startLine: number,
@@ -112,9 +120,11 @@ function lineIndent(line: string): number {
   return n;
 }
 
-interface CondBinding {
+export interface CondBinding {
   variable: string;
   values: string[];
+  /** From an integer comparison (only meaningful for level keys). */
+  numeric?: boolean;
 }
 
 interface IfBlock {
@@ -170,6 +180,81 @@ function enclosingIfConditions(text: string, targetLine: number): CondBinding[] 
  * `topic in ["panties", "breasts"]` → topic: [panties, breasts]
  */
 export function parseConditionExpr(expr: string): CondBinding[] {
+  return [...stringBindings(expr), ...numericBindings(expr)];
+}
+
+/** Levels are small integers; numeric comparisons are only modelled over this domain. */
+export const LEVEL_DOMAIN: number[] = Array.from({ length: 11 }, (_, i) => i);
+
+/** Placeholder keys that hold a level (`level`, `school_level`, `teacher_level`, …). */
+export function isLevelKey(key: string): boolean {
+  return /(^|_)level$/.test(key);
+}
+
+/**
+ * Integer comparisons (`school_level >= 8`, `3 <= level < 5`, `level == 2`, `!=`), combined
+ * with `and` (intersection) / `or` (union). A variable is only bound when every disjunct
+ * constrains it and all its literals lie in the level domain (so `inhibition >= 50` or
+ * `not …` never produce values). Callers keep these only for level keys.
+ */
+function numericBindings(expr: string): CondBinding[] {
+  if (/\bnot\b/.test(expr)) {
+    return [];
+  }
+  const cmp = (op: string, a: number, b: number): boolean =>
+    op === '>=' ? a >= b : op === '>' ? a > b : op === '<=' ? a <= b : op === '<' ? a < b : op === '==' ? a === b : a !== b;
+  const inDomain = (n: number) => n >= LEVEL_DOMAIN[0] && n <= LEVEL_DOMAIN[LEVEL_DOMAIN.length - 1];
+  const disjuncts = expr.split(/\s+or\s+/);
+  const perDisjunct: Map<string, Set<number>>[] = [];
+  const invalid = new Set<string>();
+  const ID = '([A-Za-z_][A-Za-z0-9_]*)';
+  const OP = '(>=|<=|==|!=|>|<)';
+  const NUM = '(-?[0-9]+)';
+  const chainRe = new RegExp(`^${NUM}\\s*(<=|<)\\s*${ID}\\s*(<=|<)\\s*${NUM}$`);
+  const varNumRe = new RegExp(`^${ID}\\s*${OP}\\s*${NUM}$`);
+  const numVarRe = new RegExp(`^${NUM}\\s*${OP}\\s*${ID}$`);
+  const flip: Record<string, string> = { '>=': '<=', '<=': '>=', '>': '<', '<': '>', '==': '==', '!=': '!=' };
+  for (const d of disjuncts) {
+    const vars = new Map<string, Set<number>>();
+    const restrict = (v: string, pred: (n: number) => boolean, literals: number[]) => {
+      if (!literals.every(inDomain)) {
+        invalid.add(v);
+      }
+      const prev = vars.get(v) ?? new Set(LEVEL_DOMAIN);
+      vars.set(v, new Set([...prev].filter(pred)));
+    };
+    for (const raw of d.split(/\s+and\s+/)) {
+      const c = raw.trim().replace(/^\(+/, '').replace(/\)+$/, '').trim();
+      let m: RegExpExecArray | null;
+      if ((m = chainRe.exec(c))) {
+        const lo = Number(m[1]);
+        const hi = Number(m[5]);
+        const [op1, v, op2] = [m[2], m[3], m[4]];
+        restrict(v, (n) => cmp(flip[op1], n, lo) && cmp(op2, n, hi), [lo, hi]);
+      } else if ((m = varNumRe.exec(c))) {
+        const n0 = Number(m[3]);
+        restrict(m[1], (n) => cmp(m![2], n, n0), [n0]);
+      } else if ((m = numVarRe.exec(c))) {
+        const n0 = Number(m[1]);
+        restrict(m[3], (n) => cmp(flip[m![2]], n, n0), [n0]);
+      }
+    }
+    perDisjunct.push(vars);
+  }
+  const out: CondBinding[] = [];
+  const all = new Set(perDisjunct.flatMap((v) => [...v.keys()]));
+  for (const v of all) {
+    if (invalid.has(v) || perDisjunct.some((d) => !d.has(v))) {
+      continue;
+    }
+    const union = new Set<number>();
+    perDisjunct.forEach((d) => d.get(v)!.forEach((n) => union.add(n)));
+    out.push({ variable: v, values: [...union].sort((a, b) => a - b).map(String), numeric: true });
+  }
+  return out;
+}
+
+function stringBindings(expr: string): CondBinding[] {
   const byVar = new Map<string, string[]>();
 
   const add = (variable: string, value: string) => {

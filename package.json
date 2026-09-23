@@ -1,7 +1,7 @@
 {
   "name": "mts-event-manager",
   "displayName": "MTS Event Manager",
-    "description": "Event-Label navigation, snippet helpers, image and paperdoll preview for Mind the School RenPy events.",
+  "description": "Event-Label navigation, snippet helpers, image and paperdoll preview for Mind the School RenPy events.",
   "version": "0.5.7",
   "publisher": "mts",
   "engines": {
@@ -13,7 +13,9 @@
   ],
   "activationEvents": [
     "onLanguage:renpy",
-    "workspaceContains:**/*.rpy"
+    "workspaceContains:**/*.rpy",
+    "onWebviewPanel:mtsEventPreview",
+    "onWebviewPanel:mtsEventOverview"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -57,8 +59,37 @@
       {
         "command": "mtsEventManager.editPaperdoll",
         "title": "MTS: Edit Paperdoll"
+      },
+      {
+        "command": "mtsEventManager.previewEvent",
+        "title": "MTS: Preview Event Timeline"
+      },
+      {
+        "command": "mtsEventManager.editEventDefinition",
+        "title": "MTS: Edit Event Definition"
+      },
+      {
+        "command": "mtsEventManager.newEvent",
+        "title": "MTS: New Event"
+      },
+      {
+        "command": "mtsEventManager.eventOverview",
+        "title": "MTS: Event Overview"
+      },
+      {
+        "command": "mtsEventManager.showInTimeline",
+        "title": "MTS: Show in Event Timeline"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "mtsEventManager.showInTimeline",
+          "when": "resourceExtname == .rpy",
+          "group": "navigation@90"
+        }
+      ]
+    },
     "configuration": {
       "title": "MTS Event Manager",
       "properties": {
@@ -109,7 +140,9 @@
     "vscode:prepublish": "npm run compile",
     "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap --watch=forever",
-    "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js"
+    "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js && npm run verify:webview && npm run verify:editor",
+    "verify:webview": "esbuild ./scripts/check-webview.ts --bundle --outfile=scripts/check-webview.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-webview.js && esbuild ./scripts/check-defui.ts --bundle --outfile=scripts/check-defui.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-defui.js && esbuild ./scripts/check-previewui.ts --bundle --outfile=scripts/check-previewui.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-previewui.js && esbuild ./scripts/check-images.ts --bundle --outfile=scripts/check-images.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/check-images.js && esbuild ./scripts/check-video.ts --bundle --outfile=scripts/check-video.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/check-video.js && esbuild ./scripts/check-events.ts --bundle --outfile=scripts/check-events.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-events.js",
+    "verify:editor": "esbuild ./scripts/fuzz-pycall.ts --bundle --outfile=scripts/fuzz-pycall.js --platform=node --format=cjs && node scripts/fuzz-pycall.js && esbuild ./scripts/fuzz-eventdef.ts --bundle --outfile=scripts/fuzz-eventdef.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-eventdef.js && esbuild ./scripts/fuzz-scene.ts --bundle --outfile=scripts/fuzz-scene.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-scene.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

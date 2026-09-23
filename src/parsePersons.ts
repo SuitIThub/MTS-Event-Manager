@@ -6,6 +6,87 @@ import { DialoguePortraitSite, LabelDefinition, ParsedCall, PersonInfo } from '.
 
 const SPEECH_METHODS = new Set(['say', 'think', 'whisper', 'shout']);
 
+/**
+ * Statement/control-flow keywords that can look like `ident "..."` but are never a
+ * speaker. Unlike SKIP_SPEAKERS this keeps narrator-ish speakers (subtitles, nvl, …)
+ * so the timeline can show them as dialogue; the portrait pass drops them separately
+ * because they resolve to no person.
+ */
+const STRUCTURAL_KEYWORDS = new Set([
+  'if', 'elif', 'else', 'while', 'for', 'return', 'jump', 'call', 'show', 'hide',
+  'scene', 'play', 'stop', 'queue', 'pause', 'define', 'default', 'label', 'menu',
+  'python', 'init', 'image', 'translate', 'voice', 'window', 'with', 'style',
+  'screen', 'True', 'False', 'None',
+]);
+
+export interface SayStatement {
+  line: number;
+  /** Column where the speaker identifier starts. */
+  startChar: number;
+  /** First identifier (before any `.method`), e.g. `emiko`, `subtitles`. */
+  firstIdent: string;
+  /** Full speaker chain, e.g. `emiko.say` or `character.subtitles`. */
+  chain: string;
+  /** The spoken text (first string literal on the line). */
+  text: string;
+}
+
+/**
+ * Scan every `speaker "text"` say-statement in the document. Shared by the portrait
+ * decorator and the event timeline. Skips comments, `$`-lines and structural keywords;
+ * keeps narrator speakers like `subtitles`.
+ */
+export function scanSayStatements(
+  text: string,
+  range?: { start: number; end: number }
+): SayStatement[] {
+  const out: SayStatement[] = [];
+  const lines = text.split('\n');
+  const from = range ? Math.max(0, range.start) : 0;
+  const to = range ? Math.min(lines.length, range.end) : lines.length;
+  for (let line = from; line < to; line++) {
+    const raw = lines[line];
+    const indent = raw.match(/^[ \t]*/)?.[0].length ?? 0;
+    const body = raw.slice(indent);
+    if (!body || body.startsWith('#') || body.startsWith('$')) {
+      continue;
+    }
+    const ident = readIdentifier(body, 0);
+    if (!ident) {
+      continue;
+    }
+    if (STRUCTURAL_KEYWORDS.has(ident.name)) {
+      continue;
+    }
+    let end = ident.end;
+    let chain = ident.name;
+    while (end < body.length && body[end] === '.') {
+      const next = readIdentifier(body, end + 1);
+      if (!next) {
+        break;
+      }
+      chain += '.' + next.name;
+      end = next.end;
+    }
+    let i = end;
+    while (i < body.length && (body[i] === ' ' || body[i] === '\t')) {
+      i++;
+    }
+    if (body[i] !== '"' && body[i] !== "'") {
+      continue;
+    }
+    const lit = readStringLiteral(body, i);
+    out.push({
+      line,
+      startChar: indent,
+      firstIdent: ident.name,
+      chain,
+      text: lit?.value ?? '',
+    });
+  }
+  return out;
+}
+
 const SKIP_SPEAKERS = new Set([
   'subtitles',
   'subtitles_Empty',
@@ -216,6 +297,44 @@ export function normalizeSpeakerToken(raw: string): string {
   return s;
 }
 
+export const SPEECH_TYPES = ['say', 'think', 'shout', 'whisper'] as const;
+export type SpeechType = (typeof SPEECH_TYPES)[number];
+
+const SUFFIX_TYPE: Record<string, SpeechType> = {
+  _whispering: 'whisper',
+  _whisper: 'whisper',
+  _shouting: 'shout',
+  _shout: 'shout',
+  _thinking: 'think',
+  _thought: 'think',
+};
+
+/** Split a speaker chain into its bare speaker variable and its dialogue type. */
+export function parseSpeakerChain(chain: string): { speaker: string; type: SpeechType } {
+  let s = chain;
+  if (s.startsWith('character.')) {
+    s = s.slice('character.'.length);
+  }
+  const dot = s.lastIndexOf('.');
+  if (dot > 0 && SPEECH_METHODS.has(s.slice(dot + 1))) {
+    return { speaker: s.slice(0, dot), type: s.slice(dot + 1) as SpeechType };
+  }
+  for (const suf of SPEAKER_SUFFIXES) {
+    if (s.endsWith(suf)) {
+      return { speaker: s.slice(0, -suf.length), type: SUFFIX_TYPE[suf] };
+    }
+  }
+  return { speaker: s, type: 'say' };
+}
+
+/** Rebuild a speaker chain from a variable and a dialogue type (method form). */
+export function buildSpeakerChain(variable: string, type: SpeechType): string {
+  if (variable === 'subtitles' || variable === 'subtitles_Empty' || variable === 'nv_text') {
+    return variable;
+  }
+  return type === 'say' ? variable : `${variable}.${type}`;
+}
+
 export function resolveTokenToPersonKeys(token: string, index: PersonIndexData): string[] {
   const name = normalizeSpeakerToken(token);
   if (!name || SKIP_SPEAKERS.has(name)) {
@@ -314,7 +433,23 @@ function parseRhs(rhs: string): AssignmentRhs | undefined {
   return undefined;
 }
 
+/** Last span's assignments; the timeline asks for the same span once per dialogue line. */
+let assignMemo: { text: string; start: number; end: number; result: Map<string, { line: number; rhs: AssignmentRhs }[]> } | undefined;
+
 function assignmentsInSpan(
+  text: string,
+  startLine: number,
+  endLine: number
+): Map<string, { line: number; rhs: AssignmentRhs }[]> {
+  if (assignMemo && assignMemo.text === text && assignMemo.start === startLine && assignMemo.end === endLine) {
+    return assignMemo.result;
+  }
+  const result = computeAssignmentsInSpan(text, startLine, endLine);
+  assignMemo = { text, start: startLine, end: endLine, result };
+  return result;
+}
+
+function computeAssignmentsInSpan(
   text: string,
   startLine: number,
   endLine: number
@@ -411,49 +546,18 @@ export function parseDialoguePortraitSites(
   selectorValuesForLine: (line: number) => Record<string, string[]>
 ): DialoguePortraitSite[] {
   const sites: DialoguePortraitSite[] = [];
-  const lines = text.split('\n');
   const assignCache = new Map<string, Map<string, { line: number; rhs: AssignmentRhs }[]>>();
 
-  for (let line = 0; line < lines.length; line++) {
-    const raw = lines[line];
-    const trimmedStart = raw.match(/^[ \t]*/)?.[0].length ?? 0;
-    const body = raw.slice(trimmedStart);
-    if (!body || body.startsWith('#') || body.startsWith('$')) {
+  for (const say of scanSayStatements(text)) {
+    if (SKIP_SPEAKERS.has(say.firstIdent)) {
       continue;
     }
-    const ident = readIdentifier(body, 0);
-    if (!ident) {
-      continue;
-    }
-    let end = ident.end;
-    let chain = ident.name;
-    while (end < body.length && body[end] === '.') {
-      const next = readIdentifier(body, end + 1);
-      if (!next) {
-        break;
-      }
-      chain += '.' + next.name;
-      end = next.end;
-    }
-    let i = end;
-    while (i < body.length && (body[i] === ' ' || body[i] === '\t')) {
-      i++;
-    }
-    const quote = body[i];
-    if (quote !== '"' && quote !== "'") {
-      continue;
-    }
-
-    const firstName = ident.name;
-    if (SKIP_SPEAKERS.has(firstName)) {
-      continue;
-    }
-    const token = normalizeSpeakerToken(chain);
+    const token = normalizeSpeakerToken(say.chain);
     if (!token || SKIP_SPEAKERS.has(token)) {
       continue;
     }
 
-    const span = topLevelLabelSpan(labels, line);
+    const span = topLevelLabelSpan(labels, say.line);
     const cacheKey = `${span.startLine}:${span.endLine}`;
     let assignments = assignCache.get(cacheKey);
     if (!assignments) {
@@ -466,8 +570,8 @@ export function parseDialoguePortraitSites(
       {
         index: personIndex,
         assignments,
-        selectorValues: selectorValuesForLine(line),
-        beforeLine: line,
+        selectorValues: selectorValuesForLine(say.line),
+        beforeLine: say.line,
       },
       new Set()
     );
@@ -485,11 +589,104 @@ export function parseDialoguePortraitSites(
       continue;
     }
 
-    const startChar = trimmedStart;
     sites.push({
-      range: new vscode.Range(line, startChar, line, startChar + ident.name.length),
+      range: new vscode.Range(say.line, say.startChar, say.line, say.startChar + say.firstIdent.length),
       personKeys: resolved,
     });
   }
   return sites;
+}
+
+/** variable → personKey for direct `Person[...]` / `get_person(...)` loads in the event label. */
+export function eventCharacterBindings(
+  text: string,
+  labels: LabelDefinition[],
+  index: PersonIndexData,
+  line: number
+): Map<string, string> {
+  const span = topLevelLabelSpan(labels, line);
+  const assigns = assignmentsInSpan(text, span.startLine, span.endLine);
+  const out = new Map<string, string>();
+  for (const [variable, entries] of assigns) {
+    const rhs = entries[entries.length - 1]?.rhs;
+    if (!rhs || rhs.kind !== 'person') {
+      continue;
+    }
+    const key = index.byKey.has(rhs.value) ? rhs.value : resolveTokenToPersonKeys(rhs.value, index)[0];
+    if (key) {
+      out.set(variable, key);
+    }
+  }
+  return out;
+}
+
+const BEGIN_EVENT_LINE_RE = /^[ \t]*\$?[ \t]*begin_event\s*\(/;
+const CHAR_LOAD_LINE_RE =
+  /^[ \t]*\$[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*.*(?:Person\s*\[|get_person(?:_char_with_key)?\s*\()/;
+
+/**
+ * Where to add a new `$ x = Person[...]` character load: after the last existing load in
+ * the block below `begin_event`, else right after `begin_event`.
+ */
+export function findCharacterLoadInsert(
+  text: string,
+  labels: LabelDefinition[],
+  line: number
+): { line: number; blankBefore: boolean; indent: string } {
+  const span = topLevelLabelSpan(labels, line);
+  const lines = text.split('\n');
+  const last = Math.min(span.endLine, lines.length - 1);
+  let beginLine = -1;
+  for (let i = span.startLine; i <= last; i++) {
+    if (BEGIN_EVENT_LINE_RE.test(lines[i] ?? '')) {
+      beginLine = i;
+      break;
+    }
+  }
+  const from = beginLine >= 0 ? beginLine + 1 : span.startLine;
+  let lastLoad = -1;
+  for (let i = from; i <= last; i++) {
+    const row = lines[i] ?? '';
+    if (row.trim() === '' || row.trim().startsWith('#')) {
+      continue;
+    }
+    if (CHAR_LOAD_LINE_RE.test(row)) {
+      lastLoad = i;
+      continue;
+    }
+    break;
+  }
+  const anchor = lastLoad >= 0 ? lastLoad : beginLine >= 0 ? beginLine : span.startLine;
+  const indent = /^[ \t]*/.exec(lines[anchor] ?? '')?.[0] ?? '    ';
+  return { line: anchor, blankBefore: lastLoad < 0, indent };
+}
+
+/** Resolve a speaker chain on a specific line to person keys (for the timeline). */
+export function resolveSpeakerPersonKeys(
+  text: string,
+  labels: LabelDefinition[],
+  personIndex: PersonIndexData,
+  chain: string,
+  line: number,
+  selectorValues: Record<string, string[]>
+): string[] {
+  const token = normalizeSpeakerToken(chain);
+  if (!token) {
+    return [];
+  }
+  const span = topLevelLabelSpan(labels, line);
+  const assignments = assignmentsInSpan(text, span.startLine, span.endLine);
+  const personKeys = resolveName(
+    token,
+    { index: personIndex, assignments, selectorValues, beforeLine: line },
+    new Set()
+  );
+  return unique(
+    personKeys.flatMap((k) => {
+      const mapped = personIndex.aliases.get(k);
+      return mapped ? [mapped] : [k];
+    })
+  )
+    .filter((k) => personIndex.byKey.has(k))
+    .sort();
 }

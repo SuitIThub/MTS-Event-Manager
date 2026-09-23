@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { findAllCallsByName, findCallsByName, secondPositionalString, walkCalls } from './callParser';
 import { positionToOffset, readStringLiteral } from './scan';
+import { parsePyCall } from './pyCall';
+import { selectorValueMap } from './selectorValues';
 import { EVENT_KINDS, EventDefinition, EventKind, EventPatternInfo, ParsedCall } from './types';
 
 const EVENT_NAME_SET = new Set<string>(EVENT_KINDS);
@@ -145,6 +147,12 @@ export function extractSelectorValuesFromEventCall(
   call: ParsedCall
 ): Record<string, string[]> {
   const start = positionToOffset(text, call.range.start.line, call.range.start.character);
+  // Evaluate the selectors like the engine (weights, condition-gated choices, nested
+  // selectors, alt=) instead of harvesting every string literal of their arguments.
+  const exact = parsePyCall(text, start);
+  if (exact && exact.name === call.name) {
+    return selectorValueMap(text, exact);
+  }
   const end = positionToOffset(text, call.range.end.line, call.range.end.character);
   const selectorCalls = findAllCallsByName(text, (name) => name.endsWith('Selector'), start, end);
   const out: Record<string, string[]> = {};

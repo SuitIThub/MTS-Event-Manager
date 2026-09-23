@@ -3,6 +3,10 @@ import { resolveSiteImages } from './codeLens';
 import { showImagePreviewCarousel } from './imagePreview';
 import { WorkspaceIndex } from './indexer';
 import { showPaperdollEditor } from './paperdollPanel';
+import { showEventPreview } from './previewPanel';
+import { createNewEvent } from './newEvent';
+import { showEventOverview } from './eventOverview';
+import { revealInEventTimeline } from './previewPanel';
 import { showPortraitPanel } from './portraitPanel';
 import { PortraitStore } from './portraitStore';
 import { pickAndInsertSchema } from './snippets';
@@ -146,6 +150,37 @@ export function registerCommands(
       async (uriStr?: string, line?: number, character?: number) => {
         const uri = uriStr ? vscode.Uri.parse(uriStr) : undefined;
         await showPaperdollEditor(context, index, uri, line, character);
+      }
+    ),
+    vscode.commands.registerCommand('mtsEventManager.newEvent', async (uri?: string) => {
+      await createNewEvent(context, index, store, uri);
+    }),
+    vscode.commands.registerCommand('mtsEventManager.editEventDefinition', async (labelName?: string) => {
+      const label = labelName ? index.getLabel(labelName) : undefined;
+      if (!label) {
+        void vscode.window.showWarningMessage(
+          `The scene label "${labelName ?? ''}" does not exist yet — create it first, then edit the definition from its preview.`
+        );
+        return;
+      }
+      await showEventPreview(context, index, store, label.uri, label.range.start.line, 'def');
+    }),
+    vscode.commands.registerCommand('mtsEventManager.showInTimeline', async (uri?: vscode.Uri) => {
+      const editor = vscode.window.activeTextEditor;
+      const target = uri instanceof vscode.Uri ? uri : editor?.document.uri;
+      if (!target || !editor) {
+        return;
+      }
+      await revealInEventTimeline(context, index, store, target, editor.selection.active.line);
+    }),
+    vscode.commands.registerCommand('mtsEventManager.eventOverview', async () => {
+      await showEventOverview(context, index, store);
+    }),
+    vscode.commands.registerCommand(
+      'mtsEventManager.previewEvent',
+      async (uriStr?: string, line?: number) => {
+        const uri = uriStr ? vscode.Uri.parse(uriStr) : undefined;
+        await showEventPreview(context, index, store, uri, line);
       }
     ),
   );

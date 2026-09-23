@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   findMatching,
   offsetToPosition,
+  positionToOffset,
   readIdentifier,
   readStringLiteral,
   skipString,
@@ -140,15 +141,7 @@ export function parseArgList(text: string, start: number, end: number): ParsedAr
 }
 
 function positionToOffsetApprox(text: string, pos: vscode.Position): number {
-  let line = 0;
-  let i = 0;
-  while (i < text.length && line < pos.line) {
-    if (text[i] === '\n') {
-      line++;
-    }
-    i++;
-  }
-  return i + pos.character;
+  return positionToOffset(text, pos.line, pos.character);
 }
 
 function nameMatches(name: string, names: Set<string> | ((name: string) => boolean)): boolean {

@@ -19,7 +19,7 @@ import {
   presetMatching,
   PresetDef,
 } from './paperdollResolve';
-import { findMatching, offsetToPosition, readStringLiteral } from './scan';
+import { findMatching, offsetToPosition, positionToOffset, readStringLiteral } from './scan';
 import { LabelDefinition, ParsedArg, ParsedCall } from './types';
 
 export interface DollRuntime {
@@ -38,8 +38,16 @@ export interface BackgroundRef {
   step?: number;
   patternKey?: string;
   blur: boolean;
+  /** Blur radius like the engine: True → 10.0, False → 0.0, a number as-is. */
+  blurAmount?: number;
+  /** blur_duration: seconds the blur eases in. */
+  blurDuration?: number;
+  /** Black-and-white (bw for one image, bw_left / bw_right on a split). */
+  bw?: boolean;
   left?: BackgroundRef;
   right?: BackgroundRef;
+  /** Split separator width in game pixels (default 8). */
+  separator?: number;
 }
 
 export interface SceneState {
@@ -109,16 +117,42 @@ export function analyzePaperdoll(
   character: number,
   persons: PersonIndexData
 ): PaperdollAnalysis {
-  const offset = positionToOffset(text, line, character);
+  return createPaperdollAnalyzer(text, labels, persons)(line, character);
+}
+
+/**
+ * Parse the document's paperdoll statements once and return a function that simulates
+ * the scene at any position. Use this when analysing many positions of the same text
+ * (e.g. every stop of an event) — the parse is the expensive part.
+ */
+export function createPaperdollAnalyzer(
+  text: string,
+  labels: LabelDefinition[],
+  persons: PersonIndexData
+): (line: number, character: number) => PaperdollAnalysis {
   const stmts = parsePaperdollStatements(text, labels);
-  const call = stmts
+  const sites = stmts
     .map((s) => (s.type === 'display' || s.type === 'register' ? s.site : undefined))
-    .filter((s): s is PaperdollCallSite => !!s)
-    .find((s) => offset >= s.start && offset < s.end) ??
-    stmts
-      .map((s) => (s.type === 'display' || s.type === 'register' ? s.site : undefined))
-      .filter((s): s is PaperdollCallSite => !!s)
-      .find((s) => s.line === line);
+    .filter((s): s is PaperdollCallSite => !!s);
+  const lines = text.split('\n');
+  return (line, character) => simulatePaperdoll(text, lines, labels, stmts, sites, line, character, persons);
+}
+
+function simulatePaperdoll(
+  text: string,
+  lines: string[],
+  labels: LabelDefinition[],
+  stmts: Stmt[],
+  sites: PaperdollCallSite[],
+  line: number,
+  character: number,
+  persons: PersonIndexData,
+  record?: (stmt: Stmt, segment: number, scene: SceneState, segStart: number, segEnd: number) => void
+): PaperdollAnalysis {
+  const offset = positionToOffset(text, line, character);
+  let segment = -1;
+  const call =
+    sites.find((s) => offset >= s.start && offset < s.end) ?? sites.find((s) => s.line === line);
 
   const region = regionFor(labels, line);
   const exclusive = call ? call.end : offset;
@@ -126,7 +160,8 @@ export function analyzePaperdoll(
   let beforeDoll: DollRuntime | undefined;
 
   const run = (startLine: number, endLine: number, branchTarget: number, until: number) => {
-    const inactive = inactiveLines(text, startLine, endLine, branchTarget);
+    segment++;
+    const inactive = inactiveLines(lines, startLine, endLine, branchTarget);
     for (const stmt of stmts) {
       if (stmt.line < startLine || stmt.line >= endLine) {
         continue;
@@ -140,6 +175,7 @@ export function analyzePaperdoll(
       if (call && stmt.start === call.start && (stmt.type === 'display' || stmt.type === 'register')) {
         beforeDoll = dollBefore(scene, stmt, persons);
       }
+      record?.(stmt, segment, scene, startLine, endLine);
       applyStmt(scene, stmt, persons);
     }
   };
@@ -153,6 +189,151 @@ export function analyzePaperdoll(
   }
 
   return { scene, beforeDoll, call, bindings: scene.bindings };
+}
+
+// ── Timed trace: what happens on stage between two stops ────────────────────
+
+/**
+ * One timed change between two stops, as the engine runs it: `display()` works through
+ * its actions in order; PDAPause blocks (`renpy.pause`), every other action starts at the
+ * current time and eases over its duration while the script continues.
+ */
+export interface PdTimedOp {
+  /** Seconds after the previous stop. */
+  at: number;
+  duration: number;
+  kind: 'show' | 'image' | 'move' | 'flip' | 'blur' | 'bw' | 'color' | 'shake' | 'hide' | 'clear' | 'bg';
+  /** Doll variable (display target). */
+  target?: string;
+  /** The doll after this action (config target, values for the images). */
+  doll?: DollRuntime;
+  /** Shake: maximum distance in game pixels. */
+  distance?: number;
+  background?: BackgroundRef;
+}
+
+export interface PdTrace {
+  /** Scene at the previous stop (where the animation starts). */
+  start: SceneState;
+  ops: PdTimedOp[];
+  /** Total blocking pause time (the stop's text appears after it). */
+  blocking: number;
+}
+
+/** Like createPaperdollAnalyzer, plus the timed trace since `fromLine` (the previous stop). */
+export function createPaperdollTracer(
+  text: string,
+  labels: LabelDefinition[],
+  persons: PersonIndexData
+): (fromLine: number | undefined, line: number) => PaperdollAnalysis & { trace: PdTrace } {
+  const stmts = parsePaperdollStatements(text, labels);
+  const sites = stmts
+    .map((s) => (s.type === 'display' || s.type === 'register' ? s.site : undefined))
+    .filter((s): s is PaperdollCallSite => !!s);
+  const lines = text.split('\n');
+  return (fromLine, line) => {
+    const recorded: { stmt: Stmt; seg: number; before: SceneState }[] = [];
+    const segments: { start: number; end: number }[] = [];
+    const analysis = simulatePaperdoll(text, lines, labels, stmts, sites, line, 0, persons, (stmt, seg, scene, segStart, segEnd) => {
+      segments[seg] = { start: segStart, end: segEnd };
+      recorded.push({ stmt, seg, before: cloneScene(scene) });
+    });
+    // Statements after the previous stop: later segments, or later lines of its segment.
+    const fromSeg = fromLine === undefined ? -1 : segments.findIndex((s) => s && fromLine >= s.start && fromLine < s.end);
+    const inTrace = recorded.filter((r) => fromLine === undefined || (fromSeg >= 0 && (r.seg > fromSeg || (r.seg === fromSeg && r.stmt.line > fromLine))));
+    const start = fromLine !== undefined && fromSeg < 0 ? cloneScene(analysis.scene) : inTrace.length ? inTrace[0].before : cloneScene(analysis.scene);
+    const ops: PdTimedOp[] = [];
+    let clock = 0;
+    const effective = fromLine !== undefined && fromSeg < 0 ? [] : inTrace;
+    for (const r of effective) {
+      clock = timedOps(r.stmt, r.before, persons, clock, ops);
+    }
+    return { ...analysis, trace: { start, ops, blocking: clock } };
+  };
+}
+
+function cloneScene(scene: SceneState): SceneState {
+  return {
+    dolls: scene.dolls.map(cloneDoll),
+    background: JSON.parse(JSON.stringify(scene.background)) as BackgroundRef,
+    presets: scene.presets,
+    bindings: new Map(scene.bindings),
+  };
+}
+
+function actionNumbers(raw: string): { pos: string[]; kw: Record<string, string> } {
+  const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(raw);
+  if (!m) {
+    return { pos: [], kw: {} };
+  }
+  const call = parseCallAt(raw, raw.indexOf(m[1]));
+  if (!call) {
+    return { pos: [], kw: {} };
+  }
+  return { pos: call.args.filter((a) => !a.name).map((a) => a.text.trim()), kw: kwargsOf(call) };
+}
+
+/** Emit the timed ops of one statement (the scene is its state before it); returns the new clock. */
+function timedOps(stmt: Stmt, before: SceneState, persons: PersonIndexData, clock: number, out: PdTimedOp[]): number {
+  if (stmt.type === 'background') {
+    out.push({ at: clock, duration: stmt.background.blurDuration ?? 0, kind: 'bg', background: stmt.background });
+    return clock;
+  }
+  if (stmt.type === 'clear' || stmt.type === 'unload') {
+    out.push({ at: clock, duration: 0, kind: 'clear' });
+    return clock;
+  }
+  if (stmt.type === 'hide') {
+    const doll = findDoll(before, stmt.ref, persons);
+    if (doll) {
+      out.push({ at: clock, duration: 0, kind: 'hide', target: doll.variable });
+    }
+    return clock;
+  }
+  if (stmt.type !== 'display') {
+    return clock;
+  }
+  const work = dollBefore(before, stmt, persons);
+  if (!work) {
+    return clock;
+  }
+  if (work.hidden) {
+    // display_paperdoll_image shows missing layers at the current config first.
+    work.hidden = false;
+    out.push({ at: clock, duration: 0, kind: 'show', target: work.variable, doll: cloneDoll(work) });
+  }
+  for (const action of stmt.site.actions) {
+    const { pos, kw } = actionNumbers(action.raw);
+    if (action.kind === 'pause') {
+      clock += Math.max(0, numberOr(kw.duration ?? pos[0], 0));
+      continue;
+    }
+    if (action.kind === 'shake') {
+      out.push({
+        at: clock,
+        duration: Math.max(0, numberOr(kw.duration ?? pos[0], 1)),
+        kind: 'shake',
+        target: work.variable,
+        distance: numberOr(kw.max_distance ?? pos[1], 15),
+      });
+      continue;
+    }
+    if (action.kind === 'other') {
+      continue;
+    }
+    applyActions(work, [action], before.presets);
+    let duration = 0;
+    if (action.kind === 'move') {
+      duration = numberOr(action.duration ?? pos[3], 0);
+    } else if (action.kind === 'preset') {
+      duration = numberOr(action.duration, 0);
+    } else if (action.kind === 'flip' || action.kind === 'blur' || action.kind === 'bw' || action.kind === 'color') {
+      duration = numberOr(kw.duration ?? pos[1], 0);
+    }
+    const kind: PdTimedOp['kind'] = action.kind === 'preset' ? 'move' : action.kind;
+    out.push({ at: clock, duration: Math.max(0, duration), kind, target: work.variable, doll: cloneDoll(work) });
+  }
+  return clock;
 }
 
 export function paperdollLensSites(text: string): PaperdollCallSite[] {
@@ -1100,6 +1281,18 @@ function parsePaperdollStatements(text: string, labels: LabelDefinition[]): Stmt
     });
   }
 
+  // Image_Series.show / show_image / show_video and show_pattern call
+  // paperdoll_manager.clear(): every paperdoll and the paperdoll background disappear.
+  const sceneRe = /(?:\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*(?:show|show_video)\s*\(\s*\d|\bImage_Series\s*\.\s*show_image\s*\(|\bshow_pattern\s*\()/g;
+  while ((match = sceneRe.exec(text)) !== null) {
+    const start = match.index;
+    const pos = offsetToPosition(text, start);
+    const row = text.slice(start - pos.character, text.indexOf('\n', start) < 0 ? text.length : text.indexOf('\n', start));
+    if (/^\s*#/.test(row) || /^\s*(?:def|class)\b/.test(row) || /^\s*[A-Za-z_][A-Za-z0-9_.]*\s+["']/.test(row)) {
+      continue;
+    }
+    stmts.push({ type: 'clear', start, end: start + match[0].length, line: pos.line });
+  }
   stmts.sort((a, b) => a.start - b.start || a.end - b.end);
   return stmts;
 }
@@ -1111,16 +1304,22 @@ function backgroundOf(
   call: ParsedCall,
   split: boolean
 ): BackgroundRef {
-  const blur = truthy(kwargsOf(call).blur);
+  const kw = kwargsOf(call);
   const positionals = call.args.filter((a) => !a.name);
-  const one = (arg: ParsedArg | undefined): BackgroundRef => {
+  // set_background(pattern, blur=False, blur_duration=0.0, bw=False, …) — blur may be positional.
+  const blurRaw = kw.blur ?? (split ? positionals[2]?.text : positionals[1]?.text);
+  const blurAmount = blurValue(blurRaw);
+  const blur = blurAmount > 0;
+  const blurDuration = numberOr(kw.blur_duration ?? (split ? positionals[3]?.text : positionals[2]?.text), 0);
+  const one = (arg: ParsedArg | undefined, bw: boolean): BackgroundRef => {
+    const base = { blur, blurAmount, blurDuration, bw };
     if (!arg) {
-      return { kind: 'none', blur };
+      return { kind: 'none', ...base };
     }
     const raw = arg.text.trim();
     const lit = readStringLiteral(raw, 0);
     if (lit && raw.slice(lit.end).trim() === '') {
-      return { kind: 'path', path: lit.value, blur };
+      return { kind: 'path', path: lit.value, ...base };
     }
     const indexed = /([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(\d+)\s*\]/.exec(raw);
     if (indexed) {
@@ -1132,17 +1331,17 @@ function backgroundOf(
         variable: indexed[1],
         step: parseInt(indexed[2], 10),
         patternKey,
-        blur,
+        ...base,
       };
     }
-    return { kind: 'none', blur };
+    return { kind: 'none', ...base };
   };
   if (!split) {
-    return one(positionals[0]);
+    return one(positionals[0], truthy(kw.bw));
   }
-  const left = one(positionals[0]);
-  const right = one(positionals[1]);
-  return { kind: 'split', blur, left, right };
+  const left = one(positionals[0], truthy(kw.bw_left));
+  const right = one(positionals[1], truthy(kw.bw_right));
+  return { kind: 'split', blur, blurAmount, blurDuration, left, right, separator: numberOr(kw.separator_width, 8) };
 }
 
 function resolveSeriesKey(
@@ -1268,6 +1467,30 @@ function argIsString(raw: string): boolean {
   return !!lit && raw.slice(lit.end).trim() === '';
 }
 
+/** Engine: True → 10.0, False → 0.0, numbers as-is. */
+function blurValue(raw: string | undefined): number {
+  if (raw === undefined) {
+    return 0;
+  }
+  const s = raw.trim();
+  if (s === 'True') {
+    return 10;
+  }
+  if (s === 'False' || s === 'None') {
+    return 0;
+  }
+  const n = Number(stripQuotes(s));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function numberOr(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) {
+    return fallback;
+  }
+  const n = Number(stripQuotes(raw.trim()));
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function truthy(raw: string | undefined): boolean {
   const text = stripQuotes(raw ?? '').trim();
   return text === 'True' || text === 'true' || text === '1';
@@ -1312,20 +1535,6 @@ function indentAt(text: string, line: number): string {
   return /^[ \t]*/.exec(body)?.[0] ?? '';
 }
 
-function positionToOffset(text: string, line: number, character: number): number {
-  let offset = 0;
-  let current = 0;
-  while (current < line && offset < text.length) {
-    const nl = text.indexOf('\n', offset);
-    if (nl < 0) {
-      return text.length;
-    }
-    offset = nl + 1;
-    current++;
-  }
-  return Math.min(text.length, offset + character);
-}
-
 interface Region {
   parentStart: number;
   parentEnd: number;
@@ -1354,8 +1563,7 @@ function regionFor(labels: LabelDefinition[], line: number): Region {
   return { parentStart: span.startLine, parentEnd, sub: { start: sub.range.start.line, end } };
 }
 
-function inactiveLines(text: string, start: number, end: number, target: number): Set<number> {
-  const lines = text.split('\n');
+function inactiveLines(lines: string[], start: number, end: number, target: number): Set<number> {
   const inactive = new Set<number>();
   const headers: { line: number; indent: number; kind: string }[] = [];
   const last = Math.min(end, lines.length);

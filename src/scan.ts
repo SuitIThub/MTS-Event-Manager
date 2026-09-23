@@ -103,28 +103,54 @@ export function skipString(text: string, i: number): number {
   return n;
 }
 
-export function offsetToPosition(text: string, offset: number): { line: number; character: number } {
-  let line = 0;
-  let lastNl = -1;
-  for (let i = 0; i < offset && i < text.length; i++) {
-    if (text[i] === '\n') {
-      line++;
-      lastNl = i;
+/**
+ * Line-start offsets for a text, cached for the last few texts. Parsers call the
+ * offset/position converters once per call and argument; without the index each call
+ * rescanned from the start of the file, which made parsing quadratic in file size.
+ */
+const lineIndexCache: { text: string; starts: number[] }[] = [];
+
+function lineStartsOf(text: string): number[] {
+  for (const entry of lineIndexCache) {
+    if (entry.text === text) {
+      return entry.starts;
     }
   }
-  return { line, character: offset - lastNl - 1 };
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      starts.push(i + 1);
+    }
+  }
+  lineIndexCache.unshift({ text, starts });
+  if (lineIndexCache.length > 4) {
+    lineIndexCache.pop();
+  }
+  return starts;
+}
+
+export function offsetToPosition(text: string, offset: number): { line: number; character: number } {
+  const starts = lineStartsOf(text);
+  const target = Math.min(offset, text.length);
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= target) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return { line: lo, character: offset - starts[lo] };
 }
 
 export function positionToOffset(text: string, line: number, character: number): number {
-  let currentLine = 0;
-  let i = 0;
-  while (i < text.length && currentLine < line) {
-    if (text[i] === '\n') {
-      currentLine++;
-    }
-    i++;
+  const starts = lineStartsOf(text);
+  if (line >= starts.length) {
+    return text.length;
   }
-  return Math.min(i + character, text.length);
+  return Math.min(starts[Math.max(0, line)] + character, text.length);
 }
 
 export function readIdentifier(text: string, i: number): { name: string; end: number } | undefined {

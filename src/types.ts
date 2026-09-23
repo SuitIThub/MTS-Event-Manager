@@ -59,6 +59,7 @@ export type ImageCallKind =
   | 'show'
   | 'show_image'
   | 'show_pattern'
+  | 'show_video'
   | 'convert_pattern'
   | 'pattern_def'
   | 'set_background'

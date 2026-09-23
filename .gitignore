@@ -3,5 +3,14 @@ out/
 *.vsix
 .DS_Store
 scripts/verify.js
+scripts/check-webview.js
+scripts/check-defui.js
+scripts/check-previewui.js
+scripts/check-images.js
+scripts/fuzz-pycall.js
+scripts/fuzz-eventdef.js
+scripts/fuzz-scene.js
 scripts/verify-images.js
 scripts/pl.js
+scripts/check-video.js
+scripts/check-events.js

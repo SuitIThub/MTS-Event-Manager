@@ -14,7 +14,7 @@ export function showPortraitPanel(
   store: PortraitStore
 ): void {
   if (panel) {
-    panel.reveal(vscode.ViewColumn.Beside);
+    panel.reveal(undefined, false);
     void refresh(panel, context, index, store);
     return;
   }

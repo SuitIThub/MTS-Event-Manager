@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { paperdollLensSites } from './paperdollScript';
 import { resolveImagesForCall } from './patternResolve';
 import { labelNameForImageCall, parseImageCallsInDocument } from './parseImageCalls';
 import { paramConstraintsForLine } from './paramConstraints';
@@ -30,18 +29,13 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
   private readonly onDidChangeCodeLensesEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.onDidChangeCodeLensesEmitter.event;
 
-  /** Cache: `${uri}::${version}::${line}` → count (-1 pending miss) */
-  private imageCountCache = new Map<string, number>();
-
   constructor(private readonly index: WorkspaceIndex) {
     index.onDidChange(() => {
-      this.imageCountCache.clear();
       this.onDidChangeCodeLensesEmitter.fire();
     });
   }
 
   refresh(): void {
-    this.imageCountCache.clear();
     this.onDidChangeCodeLensesEmitter.fire();
   }
 
@@ -73,12 +67,12 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
         events.length === 1
           ? '▶ 1 Event definition'
           : `▶ ${events.length} Event definitions`;
-      if (config.get<boolean>('enablePaperdoll', true) && !label.isSub) {
+      if (!label.isSub) {
         lenses.push(
           new vscode.CodeLens(label.range, {
-            title: '🎭 Paperdoll',
-            command: 'mtsEventManager.editPaperdoll',
-            arguments: [document.uri.toString(), label.range.start.line, label.range.start.character],
+            title: '👁 Preview',
+            command: 'mtsEventManager.previewEvent',
+            arguments: [document.uri.toString(), label.range.start.line],
           })
         );
       }
@@ -102,6 +96,13 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
     }
 
     for (const ev of this.index.getEventsForUri(document.uri)) {
+      lenses.push(
+        new vscode.CodeLens(ev.startRange, {
+          title: '✏ Edit definition',
+          command: 'mtsEventManager.editEventDefinition',
+          arguments: [ev.labelName],
+        })
+      );
       if (ev.kind !== 'EventSelect') {
         const label = this.index.getLabel(ev.labelName);
         const gotoTitle = label ? '→ Label' : '⚠ Label missing';
@@ -134,56 +135,6 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
           arguments: [ev.uri.toString(), rangeToRaw(ev.fullRange)],
         })
       );
-    }
-
-    if (config.get<boolean>('enablePaperdoll', true)) {
-      let paperdollSites: ReturnType<typeof paperdollLensSites> = [];
-      try {
-        paperdollSites = paperdollLensSites(document.getText());
-      } catch (err) {
-        console.error('[MTS Event Manager] paperdoll scan failed', err);
-      }
-      for (const site of paperdollSites) {
-        lenses.push(
-          new vscode.CodeLens(new vscode.Range(site.line, 0, site.line, 200), {
-            title: '🎭 Paperdoll',
-            command: 'mtsEventManager.editPaperdoll',
-            arguments: [document.uri.toString(), site.line, 0],
-          })
-        );
-      }
-    }
-
-    if (config.get<boolean>('enableImagePreview', true)) {
-      const labels = this.index.getLabelsForUri(document.uri);
-      const sites = collectDocumentImageSites(document, this.index);
-      for (const site of sites) {
-        const count = await this.countImages(document, site, labels);
-        const title =
-          count > 0 ? (count === 1 ? '🖼 Preview' : `🖼 ${count}`) : '⚠ No image';
-        lenses.push(
-          new vscode.CodeLens(
-            new vscode.Range(site.range.start.line, 0, site.range.start.line, 200),
-            {
-              title,
-              command: 'mtsEventManager.previewImages',
-              arguments: [
-                document.uri.toString(),
-                {
-                  kind: site.kind,
-                  line: site.range.start.line,
-                  character: site.range.start.character,
-                  variableName: site.variableName,
-                  patternKey: site.patternKey,
-                  steps: site.steps,
-                  literalPath: site.literalPath,
-                  eventLabelName: site.eventLabelName,
-                },
-              ],
-            }
-          )
-        );
-      }
     }
 
     const labels = this.index.getLabelsForUri(document.uri);
@@ -274,20 +225,6 @@ export class MtsCodeLensProvider implements vscode.CodeLensProvider {
     return lenses;
   }
 
-  private async countImages(
-    document: vscode.TextDocument,
-    site: ImageCallSite,
-    labels: ReturnType<WorkspaceIndex['getLabelsForUri']>
-  ): Promise<number> {
-    const cacheKey = `${document.uri.toString()}::${document.version}::${site.range.start.line}::${site.kind}`;
-    const cached = this.imageCountCache.get(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const uris = await resolveSiteImages(this.index, document, site, labels);
-    this.imageCountCache.set(cacheKey, uris.length);
-    return uris.length;
-  }
 }
 
 export async function resolveSiteImages(

@@ -3,21 +3,74 @@ name: Event preview timeline
 overview: "Das Paperdoll-Panel wird zur Event-Vorschau: eine Dialog-Timeline mit Vor/Zurück, Bildstand an jedem Stopp, Markern zwischen den Blöcken und dem bestehenden Editor unter der Leiste. Die Timeline folgt einem einzelnen Kontrollfluss-Pfad (Baum mit aktivem Zweig), nicht der bloßen Quelltext-Reihenfolge."
 todos:
   - id: timeline-recognizers
+    status: completed
     content: "eventTimeline.ts (Teil 1): Statement-Recognizer für alle Stopp-/Marker-Typen, je mit Fixture-Test — Dialog inkl. subtitles, bare pause / pause N, $ renpy.pause(expr), image.show_video(pause=), show_image mit pause=-Kwarg, image.show/show_pattern/show_image, paperdoll.display, set_background(_split), call_custom_menu(_with_text); rohe scene/show <image> nur als Legacy-Fallback-Marker"
   - id: timeline-model
+    status: completed
     content: "eventTimeline.ts (Teil 2): Baum-Modell aus Stopps + Markern entlang eines aktiven Pfades; if/elif/else und Menüs als Verzweigungen mit Default-Zweig; Szenenstand pro Stopp via analyzePaperdoll(stopLine) wiederverwenden"
   - id: shared-dialog-scan
+    status: completed
     content: "Say-Statement-Scan aus parsePersons faktorieren, sodass Portrait-Parser und Timeline denselben Scanner nutzen (Sprecher + Text + subtitles)"
   - id: preview-shell
+    status: completed
     content: "Panel zur Event-Vorschau umbauen: Bühne, Timeline-Karten, Schritt-Buttons, Markerklick öffnet den Editor darunter; responsives Container-Query-Layout für Hochkant / Split-Group / volle Breite mit stickyer Navigation; Stopps vorberechnet, Navigation clientseitig; Stopp-Index über Edits erhalten"
   - id: dialog-portraits
+    status: completed
     content: "Registrierte Charakterportraits auf den Dialogkarten zeigen — Portrait-Quelle (assets/ + PortraitStore) in einen geteilten Resolver faktorieren, im Webview direkt als <img> rendern (kein sharp-Strip), localResourceRoots um Portrait-Ordner erweitern, Fallback (Name/Initiale) für portraitlose Charaktere"
   - id: marker-editors
-    content: Paperdoll-GUI, Bildvorschau und Menü-Zweigwahl an den Marker hängen
+    status: completed
+    content: "Paperdoll-Editor als wiederverwendbares Modul (paperdollEditor.ts) extrahiert und echt ins Vorschau-Panel eingebettet (eigene Bühne + Controls im pdhost-Bereich, geteilt mit dem Standalone-Panel); Bild-Marker öffnet die Bildvorschau, Menü-Marker die Zweigwahl darunter"
   - id: mod-compat
+    status: completed
     content: "Mod-Kompatibilität sicherstellen: Vorschau geht ausschließlich über Index + getImageRoots + resolveImagesForCall (bereits mod-aware), keine hartkodierten game/-Pfade; Mod-Events/-Personen/-Bilder und Mod-Portraits via PortraitStore prüfen"
+  - id: reversible-edits
+    status: completed
+    content: "editHistory.ts: alle Timeline-/Paperdoll-Schreibvorgänge laufen über applyReversibleEdit; Undo-Button im Panel stellt den letzten Stand wieder her (nur wenn das Dokument seither unverändert ist, sonst Hinweis auf natives Ctrl+Z)"
   - id: plus-insert
-    content: Plus-Marker fügt Dialog, Paperdoll, Bild oder Custom-Menu an der Stelle ein
+    status: completed
+    content: "Plus-Chip öffnet einen Typ-Auswahldialog: Dialog (letzter Sprecher/subtitles), Paperdoll (öffnet den eingebetteten Editor an der Stelle), image.show, oder call_custom_menu_with_text-Skelett — jeweils reversibel und mit Cursor im Platzhalter."
+  - id: inline-editing
+    status: completed
+    content: "Dialogtext per Doppelklick inline bearbeiten (korrektes Escaping von Quotes/Backslash, Quote-Typ erhalten) und einzelne Dialog-/Pause-Stopps über einen Lösch-Button entfernen — beides reversibel über die Edit-Historie."
+  - id: speaker-type-change
+    status: completed
+    content: "Sprecher eines Dialog-Stopps per Dropdown wechseln; ist der Charakter noch nicht geladen, wird `$ var = Person[\"key\"]` (moderne Form) oben im Event zu den anderen Loads eingefügt (guessVariable + findCharacterLoadInsert). Dialogtyp (say/think/shout/whisper) per Dropdown wechseln — Methoden-Form, Sprecher bleibt erhalten."
+  - id: menu-choice-edit
+    status: completed
+    content: "Menü-Choices editieren: Titel und EventEffect-Ziel eines MenuElement im Menü-Editor ändern (callParser findet das i-te MenuElement + dessen EventEffect, ersetzt die String-Literale escaped)."
+  - id: optimize-button
+    status: completed
+    content: "✨ Optimize-Button im Panel-Header optimiert das ganze Event in einem reversiblen Schritt: Paperdoll-Display-Deduplizierung (optimizePaperdollEvent) + Zusammenführen direkt aufeinanderfolgender `$ var.show(N)`-Läufe (gleiche Variable) zu einem `call Image_Series.show_image(var, …)` (imageOptimize.ts; Kommentare bleiben erhalten, Einzel-Shows/andere Variablen unangetastet, keine Umsortierung). Ergebnis-Meldung mit Zählern."
+  - id: image-module
+    status: completed
+    content: "Bild-Marker/-Stopp öffnet ein eingebettetes Image-Modul (im imghost, wie Paperdoll) statt der externen Vorschau: patternKey-Auswahl + Step-LISTE (kommagetrennt) + Pause-Checkbox, Live-Preview, Apply. Die Extension erkennt am Pattern-Template die Form — kein <step> → show_pattern; mit <step> → convert_pattern (bestehende Bindung wiederverwenden, sonst einfügen). Ein Step → image.show(N); mehrere Steps → call Image_Series.show_image(var, …[, pause = True]) (Steps zusammengefügt). parseImageLine liest die bestehende Zeile (inkl. from-Klausel/pause) für die Vorbelegung. show_image-Steps: jeder außer dem letzten ist ein Stopp, der letzte nur bei pause=True; Step-Parsing gegen numerische Kwargs abgesichert."
+  - id: branch-bar
+    status: completed
+    content: "Branch-Leiste direkt unter der Timeline: eine Zeile pro Verzweigung (if/elif-Kette und custom_menu) auf dem gezeigten Pfad, nach Tiefe eingerückt (BranchPoint.parent/depth/title/enabled). Optionen als Buttons (selectBranch), nicht auflösbare Menüpunkte deaktiviert, Tag auto/by value; ✏ öffnet den Menü-Choice-Editor."
+  - id: video-support
+    status: completed
+    content: "Videos wie im Spiel (sd_event_5): image.show_video(step[, pause]) → Pattern-Datei des Steps → anim_<basename> (video_prefix von convert_pattern) → image … = Movie(play=…webm, start_image=…webp, loop=…) (videoResolve.ts, Index sammelt Movie-Deklarationen workspace-weit inkl. Mods; define-Pfadvariablen werden ausgewertet). Timeline: show_video ist die aktuelle Szene; pause=True bzw. positional True ist ein Stopp. Bühne spielt das Video über dem Startbild (Loop aus der Deklaration, Badge bei fehlender Deklaration/Datei). Image-Modul mit Video-Modus (Step, Pause, Loop, ＋ Movie-Definition / alle Varianten) und 🎬 Video im Insert-Chooser. Movie-Edits verifiziert (planAddMovieDefs/planSetMovieLoop) und undo-fähig; show_video mit unbekannten Argumenten (variant) wird nicht umgeschrieben."
+  - id: level-values
+    status: completed
+    content: "Numerische Level-Bedingungen (>=, <, Ketten, and/or) mit exklusiven elif/else-Bereichen; ein Level für das ganze Event (höchstes mit Bildern); Werte-Leiste aus den tatsächlich vorhandenen Bilddateien; $-Wildcard-Dateien wie die Engine (exakt vor $)."
+  - id: selector-semantics
+    status: completed
+    content: "Selector-Werte semantisch wie die Engine (get_random_choice: Gewichts-/Bedingungs-Tupel, verschachtelte Selector, alt=, ConditionSelector, RandomValueSelector-Bereiche, KwargsSelector) statt aller String-Literale. Definitions-Karten mit Wissensbasis (paramDomains.ts: daytime/weekday-Codes, Operatoren als Dropdown, Zahlenmuster, Stats, Charaktere, Klassen-Doku) + im Workspace verwendete Werte (paramUsage.ts) + Selector-Keys/-Werte des Events (z. B. ValueCondition.value nach gewähltem key)."
+  - id: event-check
+    status: completed
+    content: "🩺 Event-Check (eventCheck.ts): alle Pfade (Menüs × if/elif), pro Bild die nötigen Platzhalter-Kombinationen (exklusive Zweige, Selector-Gates wie girl_name↔location, LevelCondition, Top-Level-Bedingungen auf Selector-Keys, Start-Level aus dem Spiel), $-Joker; meldet fehlende Bilder, Movie-Deklarationen/.webm, Menüziele, Labels ohne Ende, ungeladene Sprecher, [text]-Variablen, Platzhalter ohne Selector. Tabs Issues / Images / Paths, ▶ Pfad anzeigen."
+  - id: shot-list
+    status: completed
+    content: "Abdeckung pro Pattern-Step (exakt / $ / fehlt) mit erwarteten Dateinamen; 📋 Shot-Liste als CSV (Zwischenablage / Datei) — Grundlage für die spätere StudioNeoV2-Anbindung."
+  - id: stats-markers
+    status: completed
+    content: "📈 change_stats_with_modifier- und ⏹ end_event-Marker in der Timeline mit Editoren (TINY…GIANT / DEC_*, Stat hinzufügen/entfernen, Rückgabetyp), verifiziert und undo-fähig (statsOps.ts); Effekt-Zeile pro Pfad und Pfad-Effekte im Check."
+  - id: trigger-sim
+    status: completed
+    content: "🎯 Trigger-Simulator (conditionEval.ts, eventSimulator.ts): Wochentag, Tageszeit, Level, Stats, Geld → Ergebnis mit Begründung je Bedingung (Engine-Semantik), Pool-Konkurrenz nach Priorität."
+  - id: event-overview
+    status: completed
+    content: "🗂 Event-Übersicht (eventOverview.ts, Befehl MTS: Event Overview): alle Events nach Pool, Thumbnail, Priorität, Bedingungen, Selector-Keys, Filter, Check aller sichtbaren Events mit Status; Klick öffnet die Vorschau."
 isProject: false
 ---
 

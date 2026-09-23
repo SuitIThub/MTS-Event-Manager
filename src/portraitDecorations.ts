@@ -6,6 +6,7 @@ import { WorkspaceIndex } from './indexer';
 import { labelAtLine } from './parseImageCalls';
 import { parseDialoguePortraitSites, personDisplayName, withExtraPersonKeys } from './parsePersons';
 import { PortraitStore } from './portraitStore';
+import { collectPortraitFiles } from './portraitResolve';
 
 /** Native pixel size. VS Code does not scale `contentIconPath`; the bitmap must fit a text line. */
 const ICON = 18;
@@ -53,21 +54,8 @@ export class PortraitDecorator {
   reloadPortraitFiles(): void {
     this.portraits.clear();
     this.stripCache.clear();
-    const dir = this.context.asAbsolutePath('assets');
-    if (fs.existsSync(dir)) {
-      for (const name of fs.readdirSync(dir)) {
-        const ext = path.extname(name).toLowerCase();
-        if (ext !== '.png' && ext !== '.jpg' && ext !== '.jpeg' && ext !== '.webp' && ext !== '.gif') {
-          continue;
-        }
-        const key = path.basename(name, ext);
-        this.portraits.set(key, vscode.Uri.file(path.join(dir, name)));
-      }
-    }
-    for (const custom of this.store.list()) {
-      if (fs.existsSync(custom.path)) {
-        this.portraits.set(custom.key, vscode.Uri.file(custom.path));
-      }
+    for (const [key, file] of collectPortraitFiles(this.context, this.store)) {
+      this.portraits.set(key, vscode.Uri.file(file));
     }
   }
 

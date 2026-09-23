@@ -103,24 +103,40 @@ function escapeRegExpFlexibleExt(s: string): string {
   return escapeRegExp(s).replace(/\\\.(webp|png|jpe?g|gif|webm)/gi, `\\.${IMAGE_EXT_ALT}`);
 }
 
+/**
+ * Regex for a pattern template with some placeholders fixed. A fixed value also accepts
+ * the engine's `$` wildcard file (`sd_event_5 $ 0.webp` serves every school_level) —
+ * `refine_image_with_alternatives` falls back to `$` when the exact file is missing.
+ * Steps are never wildcards. Callers rank exact matches first (see wildcardCount).
+ */
 export function templateToRegex(
   pathTemplate: string,
   fixed: Record<string, string>
 ): RegExp {
-  let t = normalizePatternPath(pathTemplate);
-  for (const [key, value] of Object.entries(fixed)) {
-    t = t.split(`<${key}>`).join(value);
-  }
-  const parts = t.split(/<[^>]+>/);
+  const t = normalizePatternPath(pathTemplate);
+  const ph = /<([^>]+)>/g;
   let re = '^';
-  for (let i = 0; i < parts.length; i++) {
-    re += escapeRegExpFlexibleExt(parts[i]);
-    if (i < parts.length - 1) {
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ph.exec(t)) !== null) {
+    re += escapeRegExpFlexibleExt(t.slice(last, m.index));
+    const value = fixed[m[1]];
+    if (value === undefined) {
       re += '[^/\\\\]+';
+    } else if (m[1] === 'step' || value === '$') {
+      re += escapeRegExp(value);
+    } else {
+      re += `(?:${escapeRegExp(value)}|\\$)`;
     }
+    last = m.index + m[0].length;
   }
-  re += '$';
+  re += escapeRegExpFlexibleExt(t.slice(last)) + '$';
   return new RegExp(re, 'i');
+}
+
+/** `$` wildcards in a file name — fewer means a more specific match (engine order). */
+export function wildcardCount(relativePath: string): number {
+  return (path.basename(relativePath).match(/\$/g) ?? []).length;
 }
 
 /**
@@ -259,14 +275,20 @@ export async function resolveImagesForCall(
           }
           const files: string[] = [];
           listFilesRecursive(searchDir, files, 0);
+          const hits: [string, string][] = [];
           for (const file of files) {
             const rel = path.relative(root, file).replace(/\\/g, '/');
             if (regex.test(rel) && !seen.has(file)) {
-              seen.add(file);
-              results.push(toInfo(file, rel, pat, fixed));
-              if (results.length >= limit) {
-                return results;
-              }
+              hits.push([file, rel]);
+            }
+          }
+          // Exact files before `$` wildcard files, like the engine.
+          hits.sort((a, b) => wildcardCount(a[1]) - wildcardCount(b[1]));
+          for (const [file, rel] of hits) {
+            seen.add(file);
+            results.push(toInfo(file, rel, pat, fixed));
+            if (results.length >= limit) {
+              return results;
             }
           }
         }
