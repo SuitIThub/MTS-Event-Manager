@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerUpdateCheck } from './updateCheck';
 import { initWebviewAssets } from './webviewAssets';
 import { CaptureBridge } from './captureBridge';
 import { MtsCodeLensProvider } from './codeLens';
@@ -19,6 +20,7 @@ const RPY_SELECTOR: vscode.DocumentSelector = [
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   initWebviewAssets(context.extensionUri);
+  registerUpdateCheck(context);
   const index = new WorkspaceIndex();
   const diagnostics = new EventDiagnostics(index);
   const codeLens = new MtsCodeLensProvider(index);

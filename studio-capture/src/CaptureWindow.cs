@@ -47,6 +47,13 @@ namespace MTSCapture
             if (GUILayout.Button("X", GUILayout.Width(24))) SetWindowVisible(false);
             GUILayout.EndHorizontal();
 
+            if (UpdateAvailable != null)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Update available: " + UpdateAvailable.Version + " (installed " + Version + ")", okStyle);
+                if (GUILayout.Button("Open release", GUILayout.Width(100))) OpenUpdate();
+                GUILayout.EndHorizontal();
+            }
             DrawEventHeader();
             if (Bridge != null && Bridge.Event != null)
             {

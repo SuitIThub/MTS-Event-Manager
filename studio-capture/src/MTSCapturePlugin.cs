@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -10,6 +11,7 @@ using KKAPI.Studio;
 using KKAPI.Studio.UI.Toolbars;
 using MTSCapture.Core;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace MTSCapture
 {
@@ -43,6 +45,10 @@ namespace MTSCapture
         internal ConfigEntry<bool> WildcardCoveredIsMissing;
         internal ConfigEntry<KeyboardShortcut> ToggleKey;
         internal ConfigEntry<KeyboardShortcut> ConfirmKey;
+        internal ConfigEntry<bool> CheckForUpdates;
+
+        /// <summary>Set when GitHub has a newer release (shown in the window).</summary>
+        internal ReleaseInfo UpdateAvailable;
 
         private SimpleToolbarToggle toolbarToggle;
         private bool windowVisible;
@@ -93,6 +99,8 @@ namespace MTSCapture
             Mode = Config.Bind(list, "Mode", CaptureMode.Missing, "All: every image of the event (existing ones are replaced after a confirm). Missing: only images without a file.");
             IncludeWildcards = Config.Bind(list, "Offer $ images", false, "Also list \"$\" images — one file that serves every value of a key (e.g. every level).");
             WildcardCoveredIsMissing = Config.Bind(list, "$-covered counts as missing", true, "Missing mode: an image that only a \"$\" file serves is still listed.");
+            CheckForUpdates = Config.Bind(general, "Check for updates", true,
+                "On studio start, ask GitHub whether a newer MTS Event Manager release (extension + this plugin) exists and show a link to it in the window.");
             ToggleKey = Config.Bind(keys, "Toggle window", KeyboardShortcut.Empty, "Opens / closes the MTS Capture window.");
             ConfirmKey = Config.Bind(keys, "Assign capture", KeyboardShortcut.Empty, "Assigns the shown capture to the selected target (same as the button).");
 
@@ -106,6 +114,7 @@ namespace MTSCapture
         private void Start()
         {
             if (!StudioAPI.InsideStudio) return;
+            if (CheckForUpdates.Value) StartCoroutine(CheckForUpdate());
             toolbarToggle = new SimpleToolbarToggle(GUID + ".window", "MTS Capture — assign screenshots to event images",
                 MakeIcon, false, this, on => windowVisible = on);
             ToolbarManager.AddLeftToolbarControl(toolbarToggle);
@@ -115,6 +124,30 @@ namespace MTSCapture
         {
             windowVisible = visible;
             if (toolbarToggle != null && toolbarToggle.Toggled.Value != visible) toolbarToggle.Toggled.OnNext(visible);
+        }
+
+        // ── Update check ──
+
+        private IEnumerator CheckForUpdate()
+        {
+            using (var req = UnityWebRequest.Get(UpdateCheck.ReleasesApi))
+            {
+                req.SetRequestHeader("User-Agent", "MTSCapture/" + Version);
+                req.SetRequestHeader("Accept", "application/vnd.github+json");
+                req.timeout = 15;
+                yield return req.SendWebRequest();
+                // Offline, rate-limited or no release yet: stay silent.
+                if (req.isNetworkError || req.isHttpError) yield break;
+                var latest = UpdateCheck.FromJson(req.downloadHandler.text);
+                if (latest == null || !UpdateCheck.IsNewer(latest.Version, Version)) yield break;
+                UpdateAvailable = latest;
+                Logger.LogMessage("MTS Capture " + latest.Version + " is available (installed: " + Version + ") — " + latest.Url);
+            }
+        }
+
+        internal void OpenUpdate()
+        {
+            if (UpdateAvailable != null) Application.OpenURL(UpdateAvailable.Url);
         }
 
         // ── Paths ──

@@ -4,8 +4,23 @@ All notable changes to the **MTS Event Manager** extension and the **MTS Capture
 Both share one version number and are released together.
 
 Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The release workflow
-publishes the sections of every version since the previous GitHub release as the release notes,
+publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
+
+## [0.6.1] - 2026-09-26
+
+### Added
+- **Update check** in the extension and in MTS Capture: once a day (extension) / on studio start
+  (plugin) GitHub is asked for a newer release; you get a note with a link to the release post.
+  Extension: *Open release* / *Skip this version*, command **MTS: Check for Updates**, setting
+  `mtsEventManager.checkForUpdates`. Plugin: a line in the window, setting *Check for updates*.
+
+### Changed
+- Moving statements in large files is much faster (the scene fuzzer went from 151 s to 39 s).
+
+### Fixed
+- The plugin build restores HarmonyX / MonoMod / Mono.Cecil (dependencies of BepInEx.Core) on a
+  clean machine.
 
 ## [0.6.0] - 2026-09-26
 

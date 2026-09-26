@@ -34,7 +34,8 @@ Window options:
 
 Screenshot folder (empty = Screencap's folder), bridge file (empty = the default above), expected width/height,
 what happens to the screenshot after assigning (keep / move to `assigned` / delete into the backup), only new
-screenshots, move older `.webp` aside, list mode, `$` options, hotkeys.
+screenshots, move older `.webp` aside, list mode, `$` options, check for updates (on studio start; the
+window then links to the new release), hotkeys.
 
 Backups: `%LOCALAPPDATA%\MTS-Event-Manager\capture\backup\`.
 

@@ -4,7 +4,8 @@
 #   - push to main:  checks; if the version in package.json has no GitHub release yet
 #                    (e.g. the very first release, or after a version bump), build both,
 #                    create the tag v<version> and publish the release with both assets.
-#                    Release notes = CHANGELOG.md sections of all versions since the last release.
+#                    Release notes = CHANGELOG.md sections of the whole minor line (for 0.6.1:
+#                    0.6.1 and 0.6.0), plus unreleased versions of an older line.
 #   - manual run:    same as a push (optionally skipping the game fuzzers)
 #
 # Bumping a version: change "version" in package.json (the plugin reads it too) and add a
@@ -125,7 +126,7 @@ jobs:
             exit 0
           fi
           echo "exists=false" >> "$GITHUB_OUTPUT"
-          # The last published release (none yet → the notes show this version only).
+          # The last published release (for the notes: unreleased versions of an older minor line).
           CODE="$(api "releases/latest" latest.json)"
           PREV=""
           if [[ "$CODE" == "200" ]]; then

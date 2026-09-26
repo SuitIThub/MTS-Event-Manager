@@ -26,6 +26,7 @@ internal static class Program
             OrderTests(bridge);
             SafetyTests(tmp, images);
             AssignTests(tmp, images, bridge);
+            UpdateTests();
             if (args.Length > 0) RealBridge(args[0]);
         }
         finally
@@ -34,6 +35,18 @@ internal static class Program
         }
         Console.WriteLine("capture plugin core problems: " + failures);
         return failures == 0 ? 0 : 1;
+    }
+
+    private static void UpdateTests()
+    {
+        Check(UpdateCheck.IsNewer("v0.7.0", "0.6.0") && UpdateCheck.IsNewer("0.10.0", "0.9.9") && UpdateCheck.IsNewer("1.0.0", "0.99.99"), "update: newer versions recognised (numeric order)");
+        Check(!UpdateCheck.IsNewer("0.6.0", "0.6.0") && !UpdateCheck.IsNewer("0.5.9", "0.6.0") && !UpdateCheck.IsNewer("x", "0.6.0") && !UpdateCheck.IsNewer("0.7.0", "0.6"), "update: same, older and malformed versions ignored");
+        var rel = UpdateCheck.FromJson("{\"tag_name\":\"v0.7.0\",\"html_url\":\"https://github.com/SuitIThub/MTS-Event-Manager/releases/tag/v0.7.0\",\"draft\":false,\"prerelease\":false,\"assets\":[]}");
+        Check(rel != null && rel.Version == "0.7.0" && rel.Url.EndsWith("/releases/tag/v0.7.0"), "update: version and release link read from the API response");
+        Check(UpdateCheck.FromJson("{\"tag_name\":\"v0.8.0\",\"html_url\":\"https://github.com/x\",\"prerelease\":true}") == null &&
+              UpdateCheck.FromJson("{\"tag_name\":\"v0.8.0\",\"html_url\":\"https://evil.example/x\"}") == null &&
+              UpdateCheck.FromJson("{\"message\":\"Not Found\"}") == null && UpdateCheck.FromJson("<html>") == null,
+            "update: pre-releases, foreign links, errors and garbage ignored");
     }
 
     private static void JsonTests()

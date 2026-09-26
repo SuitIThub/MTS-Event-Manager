@@ -48,7 +48,8 @@ The release notes list what changed.
    be known.
 4. Recommended: a Ren'Py syntax extension (language id `renpy`) for highlighting.
 
-To update, install the newer VSIX over the old one.
+To update, install the newer VSIX over the old one. The extension tells you when a new release is out
+(once a day, or on demand with **MTS: Check for Updates**).
 
 ### Plugin (`MTSCapture-<version>.zip`)
 
@@ -74,6 +75,7 @@ To update, install the newer VSIX over the old one.
 | **Event overview** | All events with thumbnail, pool, priority and conditions; check many events at once. |
 | **Code helpers** | CodeLens label ↔ event definition, insert helpers for conditions/selectors/patterns/options, diagnostics for `Event(...)` arguments, image and paperdoll hover previews, inline speaker portraits, custom portraits. |
 | **Capture bridge** | Exports the event open in the editor for the MTS Capture plugin. |
+| **Update check** | Once a day it looks for a newer release and links to the release post (**MTS: Check for Updates** checks right away). |
 
 ### MTS Capture plugin
 
@@ -83,6 +85,7 @@ To update, install the newer VSIX over the old one.
 | **Target list** | *All images* or *Only missing*, optional `$` wildcard images, and your own nesting order of the keys (e.g. level, then uniform, then step). |
 | **Assign** | Copies the screenshot as `.png` to the exact path the pattern expects. It warns on a wrong size (default 1920×1080), asks before replacing, can move an older `.webp` aside, and offers **Undo**. |
 | **Safety** | Writes only below `game/images` and `game/mods/<mod>/images`. Replaced files are backed up. |
+| **Update check** | On studio start it looks for a newer release; the window then shows *Update available* with a link to the release post. |
 
 ---
 
@@ -254,6 +257,7 @@ VS Code event editor ──► active-event.json ──► MTS Capture window �
 | Only new screenshots | on | Offer only captures taken after the studio started. |
 | Move older .webp aside | on | See *Older .webp* above. |
 | Mode, Offer $ images, $-covered counts as missing | Missing, off, on | Same as the window toggles. |
+| Check for updates | on | On studio start, look for a newer release and show a link in the window. |
 | Toggle window / Assign capture | — | Optional hotkeys. |
 
 Backups go to `%LOCALAPPDATA%\MTS-Event-Manager\capture\backup\`.
@@ -318,6 +322,7 @@ The extension reads the game's own conventions. As a mod author, these are the t
 | `mtsEventManager.imageRoots` | `[]` | Extra folders to resolve `Pattern` paths. `**/game` and `game/mods/*` are always included. |
 | `mtsEventManager.capture.enabled` | `true` | Export the open event for MTS Capture. |
 | `mtsEventManager.capture.bridgeFile` | `""` | Bridge file path. Empty uses the default under `%LOCALAPPDATA%`. |
+| `mtsEventManager.checkForUpdates` | `true` | Once a day, check GitHub for a newer release and offer a link to it. |
 
 ---
 
@@ -394,6 +399,6 @@ The **Build & Release** workflow then:
 - if `v<version>` has no GitHub release yet, packages `mts-event-manager-<version>.vsix` and
   `MTSCapture-<version>.zip` and publishes the release.
 
-The release notes are the changelog sections of every version since the previous release. For the very first
-release they are this version's section only. Pull requests get the checks without a release. The workflow can
+The release notes are the changelog sections of the whole minor line: a release of 0.6.1 shows 0.6.1 and 0.6.0.
+Versions of an older line that were never released are added too. Pull requests get the checks without a release. The workflow can
 also be started by hand under **Actions → Build & Release → Run workflow**.

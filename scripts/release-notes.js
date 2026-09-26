@@ -4,8 +4,8 @@
 //   node scripts/release-notes.js --check 0.6.0
 //       fails (exit 1) when CHANGELOG.md has no section for that version
 //   node scripts/release-notes.js --version 0.6.0 [--previous 0.5.7] [--out notes.md]
-//       the sections of every version newer than --previous up to --version, newest first;
-//       without --previous (no release yet) only the section of --version
+//       newest first: every version of the same minor line as --version (x.y.0 … x.y.z),
+//       plus every version newer than --previous (the last release) if that is older
 //
 // Sections: `## [x.y.z] - date` (date optional).
 const fs = require('fs');
@@ -52,10 +52,13 @@ function main() {
     process.exit(2);
   }
   const previous = parse(arg('--previous'));
+  // Every version of the same minor line (0.6.0 … 0.6.x) up to this one, plus anything newer
+  // than the previous release (versions of an older line that were never released).
   const picked = all
     .filter((s) => {
       const v = parse(s.version);
-      return cmp(v, version) <= 0 && (previous ? cmp(v, previous) > 0 : cmp(v, version) === 0);
+      const sameMinor = v[0] === version[0] && v[1] === version[1];
+      return cmp(v, version) <= 0 && (sameMinor || (previous && cmp(v, previous) > 0));
     })
     .sort((a, b) => cmp(parse(b.version), parse(a.version)));
   if (!picked.some((s) => cmp(parse(s.version), version) === 0)) {

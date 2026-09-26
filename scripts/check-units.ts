@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { isNewer, releaseFromJson } from '../src/updateCheck';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -121,6 +122,16 @@ const check = (ok: boolean, m: string) => {
   const ov = parsePatternOverrides(vscode.Uri.file(path.join(os.tmpdir(), 'mods', 'x', 'mod.rpy')), mod);
   check(ov.length === 1 && ov[0].label === 'snack_chat' && ov[0].pattern.patternKey === 'main' && ov[0].pattern.pathTemplate === 'images/snack_alt/<topic> <step>.webp' && ov[0].pattern.override?.mod === 'mymod' && ov[0].pattern.range.start.line === 6,
     `overwrite_event_image parsed as a mod pattern for its event (${JSON.stringify(ov.map((o) => [o.label, o.pattern.pathTemplate, o.pattern.override?.mod]))})`);
+}
+
+// ── Update check: version comparison and release parsing ──
+{
+  check(isNewer('v0.7.0', '0.6.0') && isNewer('0.6.1', '0.6.0') && isNewer('1.0.0', '0.99.99') && isNewer('0.10.0', '0.9.9'), 'newer versions are recognised (numeric, not text order)');
+  check(!isNewer('0.6.0', '0.6.0') && !isNewer('v0.5.9', '0.6.0') && !isNewer('garbage', '0.6.0') && !isNewer('0.7.0', 'dev'), 'same, older and malformed versions are not updates');
+  const rel = releaseFromJson({ tag_name: 'v0.7.0', html_url: 'https://github.com/SuitIThub/MTS-Event-Manager/releases/tag/v0.7.0', draft: false, prerelease: false });
+  check(rel?.version === '0.7.0' && rel.url.endsWith('/releases/tag/v0.7.0'), 'release post link and version read from the GitHub response');
+  check(!releaseFromJson({ tag_name: 'v0.8.0', html_url: 'https://github.com/x', prerelease: true }) && !releaseFromJson({ tag_name: 'v0.8.0', html_url: 'https://evil.example/x' }) && !releaseFromJson({ message: 'Not Found' }),
+    'pre-releases, foreign links and error responses are ignored');
 }
 
 // ── Overview webview renders ──
