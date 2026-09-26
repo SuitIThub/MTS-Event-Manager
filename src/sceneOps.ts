@@ -8,7 +8,7 @@ import {
   removeArgEdit,
   TextEdit,
 } from './pyCall';
-import { findMatching, positionToOffset, skipString } from './scan';
+import { findMatching, positionToOffset, skipString, lineStartsOf } from './scan';
 
 /**
  * Pure, verified scene-composition operations on Ren'Py label bodies: moving statements,
@@ -81,13 +81,15 @@ export interface Statement {
 /** Logical statements in [from, to), skipping blank and comment-only lines. */
 export function logicalStatements(text: string, lines: readonly string[], from: number, to: number): Statement[] {
   const out: Statement[] = [];
+  // Line offsets once per call (not a cache lookup per line — see lineStartsOf).
+  const starts = lineStartsOf(text);
   let line = from;
   while (line < to) {
     if (isBlankOrComment(lines[line] ?? '')) {
       line++;
       continue;
     }
-    const end = logicalEnd(text, line);
+    const end = logicalEnd(text, line, line < starts.length ? starts[line] : text.length);
     out.push({ start: line, end: Math.min(end, to - 1), indent: indentOf(lines[line]) });
     line = Math.max(end, line) + 1;
   }
@@ -95,8 +97,8 @@ export function logicalStatements(text: string, lines: readonly string[], from: 
 }
 
 /** Last line of the logical line starting at `line` (open brackets span lines). */
-function logicalEnd(text: string, line: number): number {
-  let i = positionToOffset(text, line, 0);
+function logicalEnd(text: string, line: number, lineStart: number): number {
+  let i = lineStart;
   let endLine = line;
   const n = text.length;
   while (i < n) {
@@ -218,14 +220,22 @@ export function planMoveStatement(text: string, line: number, direction: -1 | 1)
   const end = endLine + 1 < lines.length ? positionToOffset(text, endLine + 1, 0) - 1 : text.length;
   const edits: TextEdit[] = [{ start, end, text: replaced.join('\n') }];
   const newText = applyEdits(text, edits);
-  // Verify: same multiset of lines, labels untouched and in the same places.
+  // Verify: everything outside the swapped region is identical, the region holds the same
+  // multiset of lines, and no label moved (labels outside the region cannot have moved).
   const newLines = newText.split('\n');
-  if (newLines.length !== lines.length || [...newLines].sort().join('\n') !== [...lines].sort().join('\n')) {
+  const regionFrom = upper.first;
+  const regionTo = lower.end + 1;
+  const sameOutside =
+    newLines.length === lines.length &&
+    newText.slice(0, start) === text.slice(0, start) &&
+    newText.slice(newText.length - (text.length - end)) === text.slice(end);
+  const regionBefore = lines.slice(regionFrom, regionTo);
+  const regionAfter = newLines.slice(regionFrom, regionTo);
+  if (!sameOutside || [...regionAfter].sort().join('\n') !== [...regionBefore].sort().join('\n')) {
     return { error: 'The move would change more than the order of statements.' };
   }
-  const labelsBefore = scanLabels(lines).map((l) => `${l.line}:${l.name}`).join('|');
-  const labelsAfter = scanLabels(newLines).map((l) => `${l.line}:${l.name}`).join('|');
-  if (labelsBefore !== labelsAfter) {
+  const labelsIn = (rows: string[]) => scanLabels(rows).map((l) => `${l.line}:${l.name}`).join('|');
+  if (labelsIn(regionBefore) !== labelsIn(regionAfter)) {
     return { error: 'The move would shift a label.' };
   }
   const offsetInUnit = line - me.first;

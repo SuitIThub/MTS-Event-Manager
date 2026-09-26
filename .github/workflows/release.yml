@@ -95,6 +95,7 @@ jobs:
           fetch-depth: 1
 
       - name: Tests
+        timeout-minutes: 20
         env:
           # The fuzzers run over the game scripts; fixture checks need the full local game
           # (with images) and skip themselves here.

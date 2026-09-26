@@ -18,6 +18,7 @@ export interface CodeMap {
   inString: boolean[];
 }
 
+// Last text only: a second entry costs more (comparing equal-length texts) than it saves.
 let mapText: string | undefined;
 let mapCache: CodeMap | undefined;
 
@@ -184,7 +185,20 @@ function stripTrailingComment(text: string, start: number, row: string): string 
 }
 
 /** Block openers (`if …:`, `label …:`, `menu:` …) without a single statement in their body. */
+let emptyBlocksText: string | undefined;
+let emptyBlocksResult: number[] = [];
+
+/** Block openers (`if …:`, `label …:`) with no body. Cached for the last text (checks call it twice per edit). */
 export function emptyBlocks(text: string): number[] {
+  if (text === emptyBlocksText) {
+    return emptyBlocksResult;
+  }
+  emptyBlocksResult = computeEmptyBlocks(text);
+  emptyBlocksText = text;
+  return emptyBlocksResult;
+}
+
+function computeEmptyBlocks(text: string): number[] {
   const stmts = statements(text);
   const out: number[] = [];
   stmts.forEach((s, k) => {

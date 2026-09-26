@@ -110,9 +110,19 @@ export function skipString(text: string, i: number): number {
  */
 const lineIndexCache: { text: string; starts: number[] }[] = [];
 
-function lineStartsOf(text: string): number[] {
-  for (const entry of lineIndexCache) {
+/**
+ * Line start offsets of `text` (cached for the last few texts). A hit moves to the front:
+ * comparing against a different text of the same length costs a full scan, so the text in
+ * use must be found first — by reference, which is instant.
+ */
+export function lineStartsOf(text: string): number[] {
+  for (let k = 0; k < lineIndexCache.length; k++) {
+    const entry = lineIndexCache[k];
     if (entry.text === text) {
+      if (k > 0) {
+        lineIndexCache.splice(k, 1);
+        lineIndexCache.unshift(entry);
+      }
       return entry.starts;
     }
   }

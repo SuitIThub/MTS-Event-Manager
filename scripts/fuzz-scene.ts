@@ -33,10 +33,14 @@ const idx = buildPersonIndex([], []);
 let moves = 0, moveOk = 0, moveRefused = 0, menus = 0, newEvents = 0, failures = 0;
 const fail = (m: string) => { failures++; if (failures <= 15) console.log('FAIL', m); };
 
-for (const f of walk(GAME)) {
+const sceneFiles = walk(GAME);
+let fileNo = 0;
+for (const f of sceneFiles) {
   const text = fs.readFileSync(f, 'utf8');
   const lines = text.split('\n');
   const name = path.basename(f);
+  // Progress, so a CI log never looks finished while this still runs.
+  if (++fileNo % 25 === 0 || fileNo === sceneFiles.length) console.log(`  … ${fileNo}/${sceneFiles.length} files, ${moves} moves`);
   // 1) Move every statement of the first few events up and down; up+down must round-trip.
   const tops = scanLabels(lines).filter((l) => !l.isSub).slice(0, 6);
   for (const top of tops) {
