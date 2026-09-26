@@ -14,3 +14,12 @@ scripts/verify-images.js
 scripts/pl.js
 scripts/check-video.js
 scripts/check-events.js
+
+# StudioNeoV2 capture plugin (C#) build output
+studio-capture/bin/
+studio-capture/obj/
+studio-capture/tests/bin/
+studio-capture/tests/obj/
+scripts/check-units.js
+scripts/verify-images.js
+dist/

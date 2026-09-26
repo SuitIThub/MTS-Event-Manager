@@ -29,6 +29,11 @@ export interface EventPatternInfo {
   pathTemplate: string;
   altKeys: string[];
   range: vscode.Range;
+  /**
+   * Set for `overwrite_event_image(event, key, Pattern(…))`: a mod's replacement pattern
+   * (active only while that mod is enabled). `uri` is the file of the call.
+   */
+  override?: { uri: vscode.Uri; mod?: string };
 }
 
 /** convert_pattern / show_pattern usage of a named Pattern. */

@@ -652,6 +652,16 @@ function sortTokens(values: string[], numeric: boolean): string[] {
   });
 }
 
+/**
+ * Permanent presets the workspace registers (`register_preset(…)` in paperdoll.rpy or a
+ * mod), set by the index. BUILTIN_PRESETS is only the fallback when none were found.
+ */
+let workspacePresets = new Map<string, PresetDef>();
+
+export function setWorkspacePresets(defs: PresetDef[]): void {
+  workspacePresets = new Map(defs.map((d) => [d.name, d]));
+}
+
 export function expandPresetMoves(
   name: string,
   extra?: Map<string, PresetDef>,
@@ -661,7 +671,7 @@ export function expandPresetMoves(
     return [];
   }
   seen.add(name);
-  const def = extra?.get(name) ?? BUILTIN_PRESETS.find((p) => p.name === name);
+  const def = extra?.get(name) ?? workspacePresets.get(name) ?? BUILTIN_PRESETS.find((p) => p.name === name);
   if (!def) {
     return undefined;
   }

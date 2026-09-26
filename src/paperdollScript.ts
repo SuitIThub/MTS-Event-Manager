@@ -1215,47 +1215,13 @@ function parsePaperdollStatements(text: string, labels: LabelDefinition[]): Stmt
 
   const presetRe = /register_temp_preset\s*\(/g;
   while ((match = presetRe.exec(text)) !== null) {
-    const call = parseCallAt(text, match.index);
-    if (!call) {
-      continue;
-    }
+    const def = presetDefAt(text, match.index);
     const end = callEnd(text, match.index);
-    const nameArg = call.args.find((a) => !a.name);
-    const name = nameArg ? readStringLiteral(nameArg.text, 0)?.value : undefined;
-    if (!name || end < 0) {
+    if (!def || end < 0) {
       continue;
-    }
-    const steps: PresetDef['steps'] = [];
-    for (const arg of call.args) {
-      if (!arg.name && arg === nameArg) {
-        continue;
-      }
-      const action = actionOf(arg);
-      if (action.kind === 'move') {
-        const move: MoveSpec = {};
-        if (action.alignX !== undefined) {
-          move.alignX = applyNumeric(0, action.alignX);
-        }
-        if (action.alignY !== undefined) {
-          move.alignY = applyNumeric(0, action.alignY);
-        }
-        if (action.zoom !== undefined) {
-          move.zoom = applyNumeric(1, action.zoom);
-        }
-        steps.push({ move });
-      } else if (action.kind === 'preset') {
-        steps.push({ preset: action.name });
-      }
     }
     const line = offsetToPosition(text, match.index).line;
-    stmts.push({
-      type: 'preset',
-      start: match.index,
-      end,
-      line,
-      name,
-      def: { name, steps },
-    });
+    stmts.push({ type: 'preset', start: match.index, end, line, name: def.name, def });
   }
 
   const assignRe = /^[ \t]*\$[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.+)$/gm;
@@ -2030,4 +1996,57 @@ function directChains(chains: OptChain[]): OptChain[] {
         other !== chain && other.branches.some((b) => chain.header >= b.bodyStart && chain.header < b.bodyEnd)
       )
   );
+}
+
+/** `register_preset("name", PDAMove(…), PDAPreset(…), …)` (or the temp variant) at `at`. */
+function presetDefAt(text: string, at: number): PresetDef | undefined {
+  const call = parseCallAt(text, at);
+  if (!call) {
+    return undefined;
+  }
+  const nameArg = call.args.find((a) => !a.name);
+  const name = nameArg ? readStringLiteral(nameArg.text, 0)?.value : undefined;
+  if (!name) {
+    return undefined;
+  }
+  const steps: PresetDef['steps'] = [];
+  for (const arg of call.args) {
+    if (!arg.name && arg === nameArg) {
+      continue;
+    }
+    const action = actionOf(arg);
+    if (action.kind === 'move') {
+      const move: MoveSpec = {};
+      if (action.alignX !== undefined) {
+        move.alignX = applyNumeric(0, action.alignX);
+      }
+      if (action.alignY !== undefined) {
+        move.alignY = applyNumeric(0, action.alignY);
+      }
+      if (action.zoom !== undefined) {
+        move.zoom = applyNumeric(1, action.zoom);
+      }
+      steps.push({ move });
+    } else if (action.kind === 'preset') {
+      steps.push({ preset: action.name });
+    }
+  }
+  return { name, steps };
+}
+
+/** Permanent presets registered in a file: `register_preset("close_body", PDAMove(…))`. */
+export function scanRegisteredPresets(text: string): PresetDef[] {
+  const out: PresetDef[] = [];
+  if (!text.includes('register_preset')) {
+    return out;
+  }
+  const re = /^[ \t]*\$?[ \t]*register_preset\s*\(/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const def = presetDefAt(text, text.indexOf('register_preset', m.index));
+    if (def) {
+      out.push(def);
+    }
+  }
+  return out;
 }

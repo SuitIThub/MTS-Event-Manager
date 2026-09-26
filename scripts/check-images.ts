@@ -8,6 +8,9 @@ import { paramConstraintsForLine } from '../src/paramConstraints';
 import { buildPersonIndex } from '../src/parsePersons';
 import { buildEventTimeline } from '../src/eventTimeline';
 import { ImageCallSite } from '../src/types';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
+
+requireGame('check-images', 'full');
 
 /**
  * Images follow the previewed branch: the same `image.show(0)` resolves to a different
@@ -15,8 +18,7 @@ import { ImageCallSite } from '../src/types';
  * MTS_WS_ROOT pointing at the game root.
  */
 async function main() {
-  process.env.MTS_WS_ROOT ??= 'M:/MTS Project/Mind the School';
-  const f = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_dormitory.rpy';
+  const f = `${SCRIPTS}/buildings/school_dormitory.rpy`;
   const text = fs.readFileSync(f, 'utf8');
   const uri = vscode.Uri.file(f);
   const labels = parseLabelsInDocument(uri, text);

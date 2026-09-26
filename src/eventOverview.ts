@@ -1,4 +1,7 @@
 import { lastColumn, trackColumn } from './panelPlacement';
+import { jsonScript, newNonce, scriptSrc, scriptTag, webviewAssetRoots } from './webviewAssets';
+import { webviewImageUri } from './webviewUri';
+import { stringExprValue } from './stringExpr';
 import * as vscode from 'vscode';
 import { runEventCheck } from './eventCheck';
 import { EventDefHeader, findEventDefs, itemKindOf } from './eventDef';
@@ -73,8 +76,9 @@ async function collectRows(index: WorkspaceIndex, webview: vscode.Webview): Prom
       }
       const conds = h.call.args.filter((a) => !a.name && !a.star && a.call && itemKindOf(a, schemaOf) === 'condition').map((a) => summarize(a.call!));
       const thumbArg = h.call.args.find((a) => a.name === 'thumbnail');
-      const thumbRel = thumbArg ? decodeValue(thumbArg.value) : undefined;
-      const thumbFile = thumbRel?.kind === 'string' ? findUnderRoots(thumbRel.value, roots) : undefined;
+      // Literal or `base_path + "…"` (resolved statically; anything dynamic shows no thumbnail).
+      const thumbRel = thumbArg ? stringExprValue(text, thumbArg.value, h.call.start) : undefined;
+      const thumbFile = thumbRel ? findUnderRoots(thumbRel, roots) : undefined;
       const lab = index.getLabel(label);
       rows[label] = {
         label,
@@ -85,7 +89,7 @@ async function collectRows(index: WorkspaceIndex, webview: vscode.Webview): Prom
         hasLabel: !!lab,
         conditions: conds.join(' · '),
         selectors: [...new Set(eventSelectorOutputs(text, h.call).map((o) => o.key))].join(', '),
-        thumb: thumbFile ? webview.asWebviewUri(vscode.Uri.file(thumbFile)).toString() : '',
+        thumb: webviewImageUri(webview, thumbFile),
       };
     }
   }
@@ -111,7 +115,7 @@ export async function showEventOverview(context: vscode.ExtensionContext, index:
     await publish(index, panel);
     return;
   }
-  const roots = (await getImageRoots()).map((r) => vscode.Uri.file(r));
+  const roots = [...(await getImageRoots()).map((r) => vscode.Uri.file(r)), ...webviewAssetRoots()];
   adoptOverview(context, index, store, vscode.window.createWebviewPanel('mtsEventOverview', 'MTS Events', lastColumn(context, 'overview', vscode.ViewColumn.Active), {
     enableScripts: true,
     retainContextWhenHidden: true,
@@ -127,7 +131,7 @@ export function registerOverviewSerializer(context: vscode.ExtensionContext, ind
         restored.dispose();
         return;
       }
-      restored.webview.options = { enableScripts: true, localResourceRoots: (await getImageRoots()).map((r) => vscode.Uri.file(r)) };
+      restored.webview.options = { enableScripts: true, localResourceRoots: [...(await getImageRoots()).map((r) => vscode.Uri.file(r)), ...webviewAssetRoots()] };
       adoptOverview(context, index, store, restored);
     },
   });
@@ -162,8 +166,15 @@ function adoptOverview(context: vscode.ExtensionContext, index: WorkspaceIndex, 
   created.webview.html = overviewHtml(created.webview);
 }
 
+/** Latest refresh wins: a slower, older collection never overwrites a newer one. */
+let publishGen = 0;
+
 async function publish(index: WorkspaceIndex, target: vscode.WebviewPanel): Promise<void> {
+  const gen = ++publishGen;
   const { groups, rows } = await collectRows(index, target.webview);
+  if (gen !== publishGen) {
+    return;
+  }
   await target.webview.postMessage({ type: 'overview', groups, rows });
 }
 
@@ -201,12 +212,13 @@ async function checkLabels(index: WorkspaceIndex, target: vscode.WebviewPanel, l
   await target.webview.postMessage({ type: 'checkDone' });
 }
 
-export function renderOverviewHtml(webview: Pick<vscode.Webview, 'cspSource'>): string {
+export function renderOverviewHtml(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): string {
   return overviewHtml(webview);
 }
 
-function overviewHtml(webview: Pick<vscode.Webview, 'cspSource'>): string {
-  const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';`;
+function overviewHtml(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): string {
+  const nonce = newNonce();
+  const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; ${scriptSrc(nonce)};`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -243,86 +255,7 @@ function overviewHtml(webview: Pick<vscode.Webview, 'cspSource'>): string {
   <span class="muted" id="count"></span>
 </div>
 <div id="list"></div>
-<script>
-const vscode = acquireVsCodeApi();
-let data = null;
-const status = {};
-let onlyBad = false;
-const collapsed = {};
-function matches(r, group, q) {
-  if (onlyBad) { const s = status[r.label]; if (!s || (!s.errors && !s.warnings && !s.error)) return false; }
-  if (!q) return true;
-  const hay = (r.label + ' ' + group + ' ' + r.conditions + ' ' + r.selectors + ' ' + r.file).toLowerCase();
-  return q.split(' ').every((w) => !w || hay.indexOf(w) >= 0);
-}
-function statusText(s) {
-  if (!s) return { cls: 'muted', text: '' };
-  if (s.pending) return { cls: 'muted', text: '… checking' };
-  if (s.error) return { cls: 'bad', text: '⛔ ' + s.error };
-  if (s.errors) return { cls: 'bad', text: '⛔ ' + s.errors + ' error(s)' + (s.missing ? ' · ' + s.missing + ' image(s) missing' : '') + (s.first ? ' — ' + s.first : '') };
-  if (s.warnings) return { cls: 'warn', text: '⚠ ' + s.warnings + ' warning(s)' + (s.first ? ' — ' + s.first : '') };
-  return { cls: 'ok', text: '✅ ok · ' + s.paths + ' path(s)' };
-}
-function visibleLabels() {
-  const q = document.getElementById('filter').value.trim().toLowerCase();
-  const out = [];
-  (data ? data.groups : []).forEach((g) => g.labels.forEach((l) => { const r = data.rows[l]; if (r && matches(r, g.name, q) && out.indexOf(l) < 0) out.push(l); }));
-  return out;
-}
-function render() {
-  const list = document.getElementById('list'); list.innerHTML = '';
-  if (!data) { list.textContent = 'Loading…'; return; }
-  const q = document.getElementById('filter').value.trim().toLowerCase();
-  let shown = 0;
-  data.groups.forEach((g) => {
-    const rows = g.labels.map((l) => data.rows[l]).filter((r) => r && matches(r, g.name, q));
-    if (!rows.length) return;
-    const box = document.createElement('div'); box.className = 'group';
-    const h = document.createElement('h3'); h.textContent = (collapsed[g.name] ? '▸ ' : '▾ ') + g.name + '  (' + rows.length + ')';
-    h.addEventListener('click', () => { collapsed[g.name] = !collapsed[g.name]; render(); });
-    box.appendChild(h);
-    if (!collapsed[g.name]) {
-      const grid = document.createElement('div'); grid.className = 'rows';
-      rows.forEach((r) => {
-        shown++;
-        const row = document.createElement('div'); row.className = 'row'; row.title = r.file + ':' + (r.line + 1);
-        const img = document.createElement('img'); img.className = 'thumb'; if (r.thumb) img.src = r.thumb; row.appendChild(img);
-        const info = document.createElement('div'); info.className = 'info';
-        const n = document.createElement('div'); n.className = 'name'; n.textContent = r.label; info.appendChild(n);
-        const m = document.createElement('div'); m.className = 'meta'; m.textContent = r.kind + (r.priority ? ' · prio ' + r.priority : '') + ' · ' + r.file + (r.hasLabel ? '' : ' · ⚠ no scene label'); info.appendChild(m);
-        const c = document.createElement('div'); c.className = 'conds'; c.textContent = r.conditions || 'no conditions'; c.title = r.conditions; info.appendChild(c);
-        if (r.selectors) { const s = document.createElement('div'); s.className = 'sels'; s.textContent = 'selectors: ' + r.selectors; info.appendChild(s); }
-        const st = statusText(status[r.label]);
-        const sd = document.createElement('div'); sd.className = 'status ' + st.cls; sd.textContent = st.text; sd.title = st.text; info.appendChild(sd);
-        row.appendChild(info);
-        row.addEventListener('click', () => vscode.postMessage({ type: 'open', label: r.label }));
-        grid.appendChild(row);
-      });
-      box.appendChild(grid);
-    }
-    list.appendChild(box);
-  });
-  document.getElementById('count').textContent = shown + ' event(s)';
-}
-document.getElementById('filter').addEventListener('input', render);
-document.getElementById('refresh').addEventListener('click', () => vscode.postMessage({ type: 'refresh' }));
-document.getElementById('onlybad').addEventListener('click', () => { onlyBad = !onlyBad; document.getElementById('onlybad').className = onlyBad ? '' : 'alt'; render(); });
-document.getElementById('checkall').addEventListener('click', () => {
-  const labels = visibleLabels();
-  labels.forEach((l) => { status[l] = { pending: true }; });
-  document.getElementById('checkall').disabled = true;
-  render();
-  vscode.postMessage({ type: 'check', labels });
-});
-window.addEventListener('message', (e) => {
-  const msg = e.data;
-  if (msg.type === 'overview') { data = msg; render(); }
-  else if (msg.type === 'status') { status[msg.label] = msg; render(); }
-  else if (msg.type === 'checkDone') { document.getElementById('checkall').disabled = false; }
-});
-// Also after VS Code reloads the page (panel moved into another window).
-vscode.postMessage({ type: 'refresh' });
-</script>
+${scriptTag(webview, 'overview', nonce)}
 </body>
 </html>`;
 }

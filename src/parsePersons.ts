@@ -1,3 +1,4 @@
+import { codeMap, sayParts, SayPart } from './codeStructure';
 import * as vscode from 'vscode';
 import { findCallsByName } from './callParser';
 import { topLevelLabelSpan } from './parseImageCalls';
@@ -29,6 +30,11 @@ export interface SayStatement {
   chain: string;
   /** The spoken text (first string literal on the line). */
   text: string;
+  /**
+   * Triple-quoted text: the separate say statements Ren'Py's monologue mode makes of it
+   * (split at blank lines). Undefined for ordinary strings.
+   */
+  parts?: SayPart[];
 }
 
 /**
@@ -42,9 +48,14 @@ export function scanSayStatements(
 ): SayStatement[] {
   const out: SayStatement[] = [];
   const lines = text.split('\n');
+  const map = codeMap(text);
   const from = range ? Math.max(0, range.start) : 0;
   const to = range ? Math.min(lines.length, range.end) : lines.length;
   for (let line = from; line < to; line++) {
+    // Lines inside a multi-line string (headmaster """ … """) are text, not statements.
+    if (map.inString[line]) {
+      continue;
+    }
     const raw = lines[line];
     const indent = raw.match(/^[ \t]*/)?.[0].length ?? 0;
     const body = raw.slice(indent);
@@ -75,13 +86,18 @@ export function scanSayStatements(
     if (body[i] !== '"' && body[i] !== "'") {
       continue;
     }
-    const lit = readStringLiteral(body, i);
+    // Read the literal in the full text: triple-quoted / multi-line strings continue on
+    // later lines. Ren'Py collapses the line breaks + indentation into single spaces.
+    const at = map.lineStarts[line] + indent + i;
+    const lit = readStringLiteral(text, at);
+    const parts = lit ? sayParts(text, at) : undefined;
     out.push({
       line,
       startChar: indent,
       firstIdent: ident.name,
       chain,
-      text: lit?.value ?? '',
+      text: parts ? parts.map((p) => p.text).join(' ') : lit ? lit.value.replace(/[ \t]*\r?\n[ \t]*/g, ' ') : '',
+      parts,
     });
   }
   return out;

@@ -282,8 +282,17 @@ export async function resolveImagesForCall(
               hits.push([file, rel]);
             }
           }
-          // Exact files before `$` wildcard files, like the engine.
-          hits.sort((a, b) => wildcardCount(a[1]) - wildcardCount(b[1]));
+          // Exact files before `$` wildcard files, like the engine. The same name in two
+          // formats (a new PNG capture next to the old WEBP, before conversion): newest first.
+          const stem = (rel: string) => rel.replace(/\.[^./]+$/, '');
+          const mtime = (file: string) => {
+            try {
+              return fs.statSync(file).mtimeMs;
+            } catch {
+              return 0;
+            }
+          };
+          hits.sort((a, b) => wildcardCount(a[1]) - wildcardCount(b[1]) || (stem(a[1]) === stem(b[1]) ? mtime(b[0]) - mtime(a[0]) : stem(a[1]) < stem(b[1]) ? -1 : 1));
           for (const [file, rel] of hits) {
             seen.add(file);
             results.push(toInfo(file, rel, pat, fixed));

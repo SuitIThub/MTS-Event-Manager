@@ -8,18 +8,30 @@ import { DEFAULT_STATE, evalCondition, matchNumberPattern } from '../src/conditi
 import { planEndType, planStatOp } from '../src/statsOps';
 import { buildEventTimeline } from '../src/eventTimeline';
 import { parsePyCall } from '../src/pyCall';
-import { renderOverviewHtml } from '../src/eventOverview';
+import { stringExprValue } from '../src/stringExpr';
+import { buildTargets, rootFor } from '../src/captureBridge';
+import { formatVariantsOf, webviewImageUri } from '../src/webviewUri';
+import { scanRegisteredPresets } from '../src/paperdollScript';
+import { expandPresetMoves, setWorkspacePresets } from '../src/paperdollResolve';
+import { parsePatternOverrides } from '../src/parseEvents';
+import { webviewBundle } from './webviewTestUtil';
 import { makeIndex } from './testIndex';
 import { createPaperdollTracer } from '../src/paperdollScript';
 import { parseBackgroundCall, planBackgroundEdit, planRemoveLine } from '../src/backgroundOps';
-import { parseImageCallsInDocument } from '../src/parseImageCalls';
-import { planRandomSayText } from '../src/randomSayOps';
+import { imageCallValues, parseImageCallsInDocument } from '../src/parseImageCalls';
+import { planDeleteSayPart, planRandomSayText, planSayText } from '../src/randomSayOps';
+import { planDeleteStatement } from '../src/backgroundOps';
+import { checkStructure, codeMap, emptyBlocks, lineInsideString, statementEndLine } from '../src/codeStructure';
+import { scanSayStatements } from '../src/parsePersons';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
+
+requireGame('check-events', 'full');
 
 /**
  * Event check, trigger simulator, stat/end edits and the overview against the real game
  * (the actual workspace index over MTS_WS_ROOT).
  */
-const GAME = 'M:/MTS Project/Mind the School/game/scripts';
+const GAME_SCRIPTS = SCRIPTS;
 let problems = 0;
 const check = (ok: boolean, m: string) => {
   if (!ok) {
@@ -30,14 +42,13 @@ const check = (ok: boolean, m: string) => {
   }
 };
 const load = (rel: string) => {
-  const f = path.join(GAME, rel);
+  const f = path.join(GAME_SCRIPTS, rel);
   const text = fs.readFileSync(f, 'utf8');
   const uri = vscode.Uri.file(f);
   return { f, text, uri, labels: parseLabelsInDocument(uri, text) };
 };
 
 async function main() {
-  process.env.MTS_WS_ROOT ??= 'M:/MTS Project/Mind the School';
   const index = await makeIndex();
   const dorm = load('buildings/school_dormitory.rpy');
   const at = (d: typeof dorm, label: string) => d.labels.find((l) => l.name === label)!.range.start.line;
@@ -237,9 +248,149 @@ async function main() {
     check(reindexMs < 800, `re-index with unchanged files: ${reindexMs} ms`);
   }
 
+  // ── Truth or Dare: base_path + "…" patterns, fragments inherit from their composite ──
+  {
+    const tod = load('events/truth_or_dare.rpy');
+    const own = index.getPatternsForLabel('truth_or_dare_1');
+    check(own.length === 1 && own[0].pathTemplate === 'images/events/truth_or_dare/truth_or_dare_1/truth_or_dare_1 <school_level> <step>.webp',
+      `base_path + "…" pattern resolved: ${own.map((q) => q.pathTemplate).join(', ')}`);
+    check(index.getFragmentParents('truth_or_dare_truth_1').join() === 'truth_or_dare_4' && index.getFragmentParents('truth_or_dare_end').join() === 'truth_or_dare_4',
+      `fragments know their composite (${index.getFragmentParents('truth_or_dare_truth_1').join()})`);
+    const frag = index.getPatternsForLabel('truth_or_dare_truth_1');
+    const keys = frag.map((q) => q.patternKey).sort().join(',');
+    check(keys === 'base,card,end,main' && frag.find((q) => q.patternKey === 'main')!.pathTemplate.includes('/truth_1/'),
+      `fragment: own main + the composite's base/card/end (${keys})`);
+    check(index.getPatternLocations('truth_or_dare_truth_1', 'card').length === 1 && index.getPatternLocations('truth_or_dare_truth_1', 'main').every((l) => l.range.start.line >= 49),
+      'pattern locations: own key stays own, inherited key points at the composite');
+    const vals = index.getSelectorValuesForLabel('truth_or_dare_truth_1');
+    check((vals.girls ?? []).includes('ikushi_ito'), `fragment sees the composite's selector values (girls: ${(vals.girls ?? []).join(', ')})`);
+    const tr1 = await runEventCheck(index, tod.uri, tod.text, tod.labels, at(tod, 'truth_or_dare_truth_1'));
+    const noPattern = tr1.issues.filter((x) => /pattern/i.test(x.message) && /not (found|defined)|unknown|no pattern/i.test(x.message));
+    check(noPattern.length === 0 && tr1.coverage.length > 0, `truth_or_dare_truth_1 check: ${tr1.coverage.length} image rows, pattern issues: ${noPattern.map((x) => x.message).join(' | ')}`);
+    // convert_pattern("card", {"girls": "ikushi_ito"}, **kwargs): only Ikushi's card is needed.
+    const cardRows = tr1.coverage.filter((r) => r.patternKey === 'card');
+    check(cardRows.length > 0 && cardRows.every((r) => r.cells.length === 9 && r.cells.every((c) => c.combo.girls === 'ikushi_ito')),
+      `data values fix the placeholder: card rows need ${cardRows.map((r) => r.cells.length).join('/')} cells, girls = ${[...new Set(cardRows.flatMap((r) => r.cells.map((c) => c.combo.girls)))].join(',')}`);
+    // ── Capture bridge targets (StudioNeoV2 plugin) ──
+    {
+      const gameRoot = GAME;
+      const modRoot = path.join(gameRoot, 'mods', 'CheatMod');
+      check(rootFor([gameRoot, modRoot], tod.f) === gameRoot && rootFor([gameRoot, modRoot], path.join(modRoot, 'cheat_mod.rpy')) === modRoot,
+        'capture: base events write under game/, mod events under their mod folder');
+      const built = buildTargets(tr1.coverage, gameRoot, [gameRoot, modRoot]);
+      const plain = built.targets.filter((x) => !x.wildcard);
+      const cells = tr1.coverage.filter((r) => !r.video).reduce((n, r) => n + r.cells.length, 0);
+      check(plain.length === cells && plain.every((x) => x.path.endsWith('.png') && x.path.startsWith(path.join(gameRoot, 'images'))),
+        `capture: one PNG target per cell under game/images (${plain.length}/${cells})`);
+      const card = plain.find((x) => x.pattern === 'card' && x.values.school_level === '4' && x.values.step === '0')!;
+      check(!!card && card.status === 'exact' && !!card.existing && fs.existsSync(card.existing) && /truth_or_dare_4_card ikushi_ito 4 0\.png$/.test(card.path),
+        `capture: target path + existing file (${card ? path.basename(card.path) + ' ← ' + path.basename(card.existing ?? '-') : 'none'})`);
+      const wild = built.targets.filter((x) => x.wildcard && x.pattern === 'card');
+      check(wild.length > 0 && wild.every((x) => Object.values(x.values).includes('$') && x.values.step !== '$') && wild.some((x) => /truth_or_dare_4_card \$ \$ 0\.png$/.test(x.path)),
+        `capture: $ variants per key (${wild.length} for card, e.g. ${path.basename(wild[wild.length - 1]?.path ?? '')})`);
+      check(built.keys[built.keys.length - 1] === 'step' && built.keyValues.school_level?.[0] === '$' && !built.keyValues.step.includes('$'),
+        `capture: keys ${built.keys.join(',')} — "$" offered first, never for step`);
+    }
+    const levels = new Set(tr1.coverage.flatMap((r) => r.cells.map((c) => c.combo.school_level)).filter(Boolean));
+    check([...levels].every((l) => Number(l) >= 2), `fragment level limits apply (${[...levels].join(',')})`);
+  }
+
+  // ── Paperdoll presets come from the game's register_preset table ──
+  {
+    const game = scanRegisteredPresets(fs.readFileSync(path.join(GAME_SCRIPTS, 'paperdoll.rpy'), 'utf8'));
+    check(game.length >= 9 && JSON.stringify(expandPresetMoves('upper_body_left')) === JSON.stringify([{ alignY: -0.1, zoom: 3 }, { alignX: 0 }]),
+      `register_preset table read (${game.length} presets), nested presets expand`);
+    setWorkspacePresets([...game, ...scanRegisteredPresets('init python:\n    register_preset("mod_far", PDAPreset("outside"), PDAMove(zoom = 0.5))\n')]);
+    check(JSON.stringify(expandPresetMoves('mod_far')) === JSON.stringify([{ alignX: -1.5 }, { zoom: 0.5 }]), 'a preset registered elsewhere (mod) is known to the simulation');
+    setWorkspacePresets(game);
+  }
+
+  // ── Code structure: multi-line strings and statements ──
+  {
+    const pta = load('pta.rpy');
+    const rows = pta.text.split('\n');
+    const inner = rows.findIndex((r) => r.includes("I'm aware that many of you"));
+    check(inner > 0 && lineInsideString(pta.text, inner), 'triple-quoted dialogue continuation line is inside a string');
+    const says = scanSayStatements(pta.text);
+    const bogus = says.filter((s) => ['I', 'Here', 'That', 'The', 'We'].includes(s.firstIdent));
+    check(bogus.length === 0, `no bogus speakers from triple-quoted text (${bogus.map((s) => s.firstIdent + '@' + (s.line + 1)).join(', ')})`);
+    const sayLine = says.find((s) => s.text.includes("I'm aware that many of you"));
+    check(!!sayLine && !lineInsideString(pta.text, sayLine.line) && !!sayLine.parts && sayLine.parts.length > 1 && sayLine.parts.some((q) => q.text.startsWith("I'm aware that many of you")),
+      `a triple-quoted say is one statement, split into Ren'Py monologue parts (${sayLine?.parts?.length})`);
+    if (sayLine) {
+      const inside = planSayText(pta.text, inner, 'x');
+      check('error' in inside, 'editing a line inside a string is refused');
+      check('error' in planSayText(pta.text, sayLine.line, 'x'), 'editing a multi-part monologue without a part is refused');
+    }
+
+    // Monologue parts (intro_events: emiko """ … """ with three blank-line separated blocks).
+    const intro = load('events/intro_events.rpy');
+    const introSays = scanSayStatements(intro.text);
+    const mono = introSays.find((s) => s.parts?.[0]?.text.startsWith('Unfortunately, the last headmaster'));
+    check(!!mono && mono.parts!.length === 3 && mono.parts![2].text === "This wasn't only bad for the students' education, but also for the school's reputation.",
+      `monologue split at blank lines: ${mono?.parts?.map((q) => q.text.slice(0, 20)).join(' | ')}`);
+    const joined = introSays.find((s) => s.parts?.[0]?.text.startsWith("You won't be handling"));
+    check(!!joined && joined.parts!.length === 2 && joined.parts![1].text.endsWith('and occasionally teach a class or two.') && !joined.parts![1].text.includes('  '),
+      'lines of one block are joined with single spaces');
+    if (mono) {
+      // Timeline: the PTA speech (reached by the default walk) — one stop per part.
+      const ptaSay = sayLine!;
+      let monoStops: ReturnType<typeof buildEventTimeline>['stops'] = [];
+      for (const lab of pta.labels) {
+        const found = buildEventTimeline(pta.text, pta.labels, index.getPersonIndex(), lab.range.start.line, () => ({})).stops.filter((s) => s.line === ptaSay.line);
+        if (found.length) {
+          monoStops = found;
+          break;
+        }
+      }
+      const n = ptaSay.parts!.length;
+      check(monoStops.length === n && monoStops.every((s, i) => s.part === i && s.partCount === n && s.text === ptaSay.parts![i].text && s.speaker === ptaSay.firstIdent),
+        `timeline: one stop per monologue part (${monoStops.map((s) => (s.part ?? 0) + 1 + '/' + s.partCount).join(', ')})`);
+      check(monoStops[1]?.partLine === ptaSay.parts![1].line && monoStops[1].partLine! > ptaSay.line, 'a part knows the line its text starts on');
+
+      const newText = 'New "quoted" text\\ ok"';
+      const ed = planSayText(intro.text, mono.line, newText, 1, mono.parts![1].text);
+      const edParts = 'error' in ed ? undefined : scanSayStatements(ed.text).find((s) => s.line === mono.line)?.parts;
+      check(!('error' in ed) && checkStructure(intro.text, ed.edits) === undefined && !!edParts && edParts.length === 3 &&
+        edParts[0].text === mono.parts![0].text && edParts[2].text === mono.parts![2].text && edParts[1].text.replace(/\\([\s\S])/g, '$1') === newText,
+        `edit one monologue part: others byte-identical (${'error' in ed ? ed.error : ''})`);
+      check('error' in planSayText(intro.text, mono.line, 'x', 1, 'stale text'), 'a stale part edit is refused');
+      const edLast = planSayText(intro.text, mono.line, 'ends with a quote "', 2, mono.parts![2].text);
+      check(!('error' in edLast) && checkStructure(intro.text, edLast.edits) === undefined, `last part may end with a quote (${'error' in edLast ? edLast.error : ''})`);
+
+      for (const k of [0, 1, 2]) {
+        const del = planDeleteSayPart(intro.text, mono.line, k, mono.parts![k].text);
+        const left = del && !('error' in del) ? scanSayStatements(del.text).find((s) => s.line === mono.line)?.parts?.map((q) => q.text) : undefined;
+        const want = mono.parts!.filter((_, i) => i !== k).map((q) => q.text);
+        check(!!del && !('error' in del) && checkStructure(intro.text, del.edits) === undefined && JSON.stringify(left) === JSON.stringify(want),
+          `delete monologue part ${k + 1}/3 keeps the others`);
+      }
+      check(planDeleteSayPart(intro.text, introSays.find((s) => !s.parts)!.line, 0) === undefined, 'a plain say has no parts to delete (the whole line goes)');
+    }
+
+    let tl = 0;
+    let bad = 0;
+    for (const lab of pta.labels) {
+      const t2 = buildEventTimeline(pta.text, pta.labels, index.getPersonIndex(), lab.range.start.line, () => ({}));
+      for (const s of t2.stops) {
+        tl++;
+        if (lineInsideString(pta.text, s.line)) {
+          bad++;
+        }
+      }
+    }
+    check(tl > 0 && bad === 0, `pta.rpy timelines: ${tl} stops, ${bad} inside strings`);
+
+    const dorm = load('buildings/school_dormitory.rpy');
+    const dr = dorm.text.split('\n');
+    const rs = dr.findIndex((r) => r.includes('$ random_say('));
+    const re = statementEndLine(dorm.text, rs);
+    check(rs > 0 && re > rs && dr[re].trim().endsWith(')'), `random_say spans lines ${rs + 1}–${re + 1}`);
+
+  }
+
   // ── Overview webview script parses ──
-  const html = renderOverviewHtml({ cspSource: 'x' });
-  const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+  const script = webviewBundle('overview');
   let parses = true;
   try {
     new Function(script);

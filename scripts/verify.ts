@@ -1,8 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseEventsInDocument } from '../src/parseEvents';
-import { parseLabelsInDocument } from '../src/parseLabels';
-import { labelAtLine } from '../src/parseImageCalls';
 import {
   buildPersonIndex,
   mergeSelectorValues,
@@ -11,6 +8,9 @@ import {
   parsePersonsInDocument,
   resolveTokenToPersonKeys,
 } from '../src/parsePersons';
+import { parseEventsInDocument } from '../src/parseEvents';
+import { parseLabelsInDocument } from '../src/parseLabels';
+import { labelAtLine } from '../src/parseImageCalls';
 import { buildSchemaRegistry, collectRawClasses } from '../src/parseSchema';
 import { buildEventTimeline, stopIndexForLine } from '../src/eventTimeline';
 import { parseConditionExpr } from '../src/paramConstraints';
@@ -22,9 +22,12 @@ import { parsePyCall } from '../src/pyCall';
 import { catalogForRoots, resolveLayers } from '../src/paperdollResolve';
 import { analyzePaperdoll, findRegisterInsert, optimizePaperdollEvent, planCursorInsert } from '../src/paperdollScript';
 import { PersonInfo } from '../src/types';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
 import * as vscode from 'vscode';
 
-const MTS = 'M:\\MTS Project\\Mind the School\\game\\scripts';
+requireGame('verify', 'full');
+
+const MTS = SCRIPTS;
 
 function applyTextEdits(text: string, edits: { start: number; end: number; text: string }[]): string {
   const ordered = [...edits].sort((a, b) => b.start - a.start);

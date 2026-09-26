@@ -1,13 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { parseEventsInDocument } from '../src/parseEvents';
-import { parseLabelsInDocument } from '../src/parseLabels';
-import { resolveImagesForCall, getImageRoots } from '../src/patternResolve';
-import { paramConstraintsForLine } from '../src/paramConstraints';
-import { buildPersonIndex } from '../src/parsePersons';
-import { buildEventTimeline } from '../src/eventTimeline';
-import { applyEdits } from '../src/pyCall';
 import {
   findUnderRoots,
   movieNameFor,
@@ -17,7 +10,17 @@ import {
   siblingVideoPath,
   videoPrefixFor,
 } from '../src/videoResolve';
+import { parseEventsInDocument } from '../src/parseEvents';
+import { parseLabelsInDocument } from '../src/parseLabels';
+import { resolveImagesForCall, getImageRoots } from '../src/patternResolve';
+import { paramConstraintsForLine } from '../src/paramConstraints';
+import { buildPersonIndex } from '../src/parsePersons';
+import { buildEventTimeline } from '../src/eventTimeline';
+import { applyEdits } from '../src/pyCall';
 import { ImageCallSite } from '../src/types';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
+
+requireGame('check-video', 'full');
 
 /**
  * Video support against the real game (MTS_WS_ROOT = game root):
@@ -26,7 +29,7 @@ import { ImageCallSite } from '../src/types';
  * - Movie edits: add (style of the file, grouped placement) and loop toggles round-trip
  *   byte-for-byte over every Movie declaration in the game.
  */
-const GAME = 'M:/MTS Project/Mind the School/game/scripts';
+const GAME_SCRIPTS = SCRIPTS;
 let problems = 0;
 const check = (ok: boolean, m: string) => {
   if (!ok) {
@@ -38,9 +41,8 @@ const check = (ok: boolean, m: string) => {
 };
 
 async function main() {
-  process.env.MTS_WS_ROOT ??= 'M:/MTS Project/Mind the School';
   const roots = await getImageRoots();
-  const f = path.join(GAME, 'buildings/school_dormitory.rpy');
+  const f = path.join(GAME_SCRIPTS, 'buildings/school_dormitory.rpy');
   const text = fs.readFileSync(f, 'utf8');
   const uri = vscode.Uri.file(f);
   const labels = parseLabelsInDocument(uri, text);
@@ -127,7 +129,7 @@ async function main() {
   }
 
   // Positional pause (office) + video_prefix kwarg (gym).
-  const office = fs.readFileSync(path.join(GAME, 'buildings/office_building.rpy'), 'utf8');
+  const office = fs.readFileSync(path.join(GAME_SCRIPTS, 'buildings/office_building.rpy'), 'utf8');
   const oLabels = parseLabelsInDocument(vscode.Uri.file('office.rpy'), office);
   const oLine = office.split('\n').findIndex((l) => l.includes('show_video(16, True)'));
   const oTop = oLabels.filter((l) => !l.isSub && l.range.start.line <= oLine).pop()!;
@@ -135,7 +137,7 @@ async function main() {
   check(oTl.stops.some((s) => s.kind === 'video' && s.line === oLine), `show_video(16, True) is a stop (${oTop.name})`);
   const oDefs = scanMovieDefs(office);
   check(oDefs.some((d) => d.name === 'anim_office_event_first_naughty_0_16' && d.play?.endsWith('office_event_first_naughty 0 16.webm')), 'office Movie resolved through anim_oefn_path');
-  const gym = fs.readFileSync(path.join(GAME, 'buildings/gym.rpy'), 'utf8');
+  const gym = fs.readFileSync(path.join(GAME_SCRIPTS, 'buildings/gym.rpy'), 'utf8');
   const gLines = gym.split('\n');
   const gVideo = gLines.findIndex((l) => l.includes('show_video('));
   check(videoPrefixFor(gLines, 'image', 0, gVideo) === 'anim_', 'video_prefix read from convert_pattern(…, video_prefix = "anim_")');
@@ -166,7 +168,7 @@ async function main() {
   let toggles = 0;
   let failures = 0;
   for (const rel of ['buildings/school_dormitory.rpy', 'buildings/gym.rpy', 'buildings/office_building.rpy']) {
-    const src = fs.readFileSync(path.join(GAME, rel), 'utf8');
+    const src = fs.readFileSync(path.join(GAME_SCRIPTS, rel), 'utf8');
     for (const d of scanMovieDefs(src)) {
       const on = planSetMovieLoop(src, d.name, !d.loop);
       if ('error' in on) {

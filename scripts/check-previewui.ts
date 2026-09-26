@@ -1,10 +1,14 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { renderPreviewHtml, stopAtScriptLine } from '../src/previewPanel';
+import { fakeWebview, jsonBlocks, webviewBundle } from './webviewTestUtil';
 import { enumeratePaths } from '../src/eventCheck';
 import { parseLabelsInDocument } from '../src/parseLabels';
 import { buildPersonIndex } from '../src/parsePersons';
 import { buildEventTimeline, TimelineStop } from '../src/eventTimeline';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
+
+requireGame('check-previewui', 'full');
 
 /**
  * Run the real event-preview webview script against a fake DOM with a real timeline
@@ -35,10 +39,12 @@ class El {
   querySelectorAll(sel: string) { const c = sel.replace(/^\./, ''); return this.all().slice(1).filter((e) => e.className.split(' ').includes(c)); }
   get options() { return this.children.filter((c) => c.tagName === 'OPTION'); }
 }
-const html = renderPreviewHtml({ cspSource: 'vscode-resource:' });
-const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+const html = renderPreviewHtml(fakeWebview);
+const script = webviewBundle('preview');
 const byId = new Map<string, El>();
 for (const m of html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)) { const e = new El(m[1]); e.id = m[2]; byId.set(m[2], e); }
+// JSON data blocks the page passes to its script (e.g. the paperdoll field list).
+for (const [id, json] of jsonBlocks(html)) byId.get(id)!.textContent = json;
 const docRoot = new El('body');
 byId.forEach((e) => docRoot.appendChild(e));
 const posted: any[] = [];
@@ -71,7 +77,7 @@ new Function('document', 'window', 'acquireVsCodeApi', 'Image', 'setTimeout', 'c
 );
 
 // Build a timeline message like publish() does (without images/portraits).
-const f = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_dormitory.rpy';
+const f = `${SCRIPTS}/buildings/school_dormitory.rpy`;
 const text = fs.readFileSync(f, 'utf8');
 const labels = parseLabelsInDocument(vscode.Uri.file(f), text);
 const lab = labels.find((l) => l.name === 'sd_event_2')!;
@@ -124,7 +130,7 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
 
 // Nested custom menus (school_building sb_event_3): rows follow the walk, indented by depth.
 {
-  const f2 = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_building.rpy';
+  const f2 = `${SCRIPTS}/buildings/school_building.rpy`;
   const text2 = fs.readFileSync(f2, 'utf8');
   const labels2 = parseLabelsInDocument(vscode.Uri.file(f2), text2);
   const lab2 = labels2.find((l) => l.name === 'sb_event_3')!;
@@ -148,7 +154,7 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
 }
 // show_image series: an image stop card opens the module for exactly that step.
 {
-  const gf = 'M:/MTS Project/Mind the School/game/scripts/buildings/gym.rpy';
+  const gf = `${SCRIPTS}/buildings/gym.rpy`;
   const gtext = fs.readFileSync(gf, 'utf8');
   const glabels = parseLabelsInDocument(vscode.Uri.file(gf), gtext);
   const glab = glabels.find((l) => l.name === 'gym_event_3')!;
@@ -218,7 +224,7 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
 }
 // Stat changes, event end, path effects, event check and trigger simulator.
 {
-  const df = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_dormitory.rpy';
+  const df = `${SCRIPTS}/buildings/school_dormitory.rpy`;
   const dtext = fs.readFileSync(df, 'utf8');
   const dlabels = parseLabelsInDocument(vscode.Uri.file(df), dtext);
   const d5 = dlabels.find((l) => l.name === 'sd_event_5')!;
@@ -292,7 +298,7 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
 
 // Pin timeline: markers stand between the stop cards, heads step down, splits are marked.
 {
-  const df = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_dormitory.rpy';
+  const df = `${SCRIPTS}/buildings/school_dormitory.rpy`;
   const dtext = fs.readFileSync(df, 'utf8');
   const dlabels = parseLabelsInDocument(vscode.Uri.file(df), dtext);
   const d5 = dlabels.find((l) => l.name === 'sd_event_5')!;
@@ -410,7 +416,7 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
 
 // "Show in Event Timeline": the stop for a script line, via another branch path when needed.
 {
-  const df = 'M:/MTS Project/Mind the School/game/scripts/buildings/school_dormitory.rpy';
+  const df = `${SCRIPTS}/buildings/school_dormitory.rpy`;
   const dtext = fs.readFileSync(df, 'utf8');
   const dlabels = parseLabelsInDocument(vscode.Uri.file(df), dtext);
   const d5 = dlabels.find((l) => l.name === 'sd_event_5')!;
@@ -467,6 +473,31 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
   input!.listeners.keydown?.forEach((fn) => fn({ key: 'Enter', preventDefault() {} }));
   const m = posted.pop();
   check(m?.type === 'editAltText' && m.argIndex === 2 && m.text === 'Eek! Out!' && m.line === 204, `Enter posts editAltText for that argument (${JSON.stringify(m)})`);
+}
+
+// PNG + WEBP of the same image: a switch on the stage and in the image module.
+{
+  const variants = { png: 'x.png?v=2', webp: 'x.webp?v=1', newer: 'png', engine: 'webp', shown: 'png' };
+  const st = { ...view(tl.stops[0]), index: 0, kind: 'image', cg: 'x.png?v=2', cgVariants: variants, dolls: [], bg: '' };
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'fmt', stops: [st], markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false } }));
+  const stageEl = byId.get('stage')!;
+  const cgSrc = () => stageEl.all().filter((e) => e.tagName === 'IMG').map((e) => e.src);
+  const bar = stageEl.all().find((e) => e.className === 'fmtbar');
+  const btns = bar ? bar.all().filter((e) => e.tagName === 'BUTTON') : [];
+  check(!!bar && btns.length === 2 && btns[0].className.includes('on') && btns[0]._t.includes('newer') && btns[1]._t.includes('in game') && bar.title.includes('game loads the WEBP'),
+    `stage: PNG/WEBP switch with hint (${btns.map((b) => b._t).join(' | ')})`);
+  check(cgSrc().includes('x.png?v=2'), 'stage shows the newer PNG by default');
+  btns[1].click();
+  check(cgSrc().includes('x.webp?v=1') && !cgSrc().includes('x.png?v=2'), 'switching to WEBP shows the game\'s file');
+  winListeners.forEach((fn) => fn({ data: { type: 'imageEditor', line: 5, src: '$ image.show(1)', patternKey: 'main', steps: [1], pause: false, hasStep: true,
+    keys: ['main'], preview: 'x.png?v=2', previewVariants: variants, video: false, call: '$ image.show(1)' } }));
+  const fmt = byId.get('imgfmt')!;
+  check(byId.get('imgpreview')!.src === 'x.webp?v=1' && fmt.all().some((e) => e.className === 'fmtbar'), 'image module: same switch, keeps the chosen WEBP');
+  fmt.all().filter((e) => e.tagName === 'BUTTON')[0].click();
+  check(byId.get('imgpreview')!.src === 'x.png?v=2' && cgSrc().includes('x.png?v=2'), 'switching in the module updates the preview and the timeline');
+  const plain = { ...st, cgVariants: undefined };
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'fmt', stops: [plain], markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false } }));
+  check(!byId.get('stage')!.all().some((e) => e.className === 'fmtbar'), 'no switch when only one format exists');
 }
 
 console.log(`preview UI problems: ${problems}`);

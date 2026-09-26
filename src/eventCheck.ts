@@ -54,6 +54,8 @@ export interface CoverageRow {
   missing: number;
   /** Too many combinations — only the first ones were checked. */
   truncated?: boolean;
+  /** Path template the cells were filled from (the definition's pattern). */
+  template?: string;
 }
 
 export interface PathSummary {
@@ -134,7 +136,7 @@ function placeholders(template: string): string[] {
   return [...normalizePatternPath(template).matchAll(/<([^>]+)>/g)].map((m) => m[1]);
 }
 
-function fill(template: string, combo: Record<string, string>, step: number | null): string {
+export function fill(template: string, combo: Record<string, string>, step: number | null): string {
   let t = normalizePatternPath(template);
   for (const [k, v] of Object.entries(combo)) {
     t = t.split(`<${k}>`).join(v);
@@ -257,13 +259,22 @@ export async function runEventCheck(
   const levelLimits: Record<string, string[]> = {};
   /** Top-level conditions of the definition(s) — e.g. NumCompareCondition("level", 3, "<=") limits level. */
   const keyRestrictions: PyCall[] = [];
-  const defUris = new Map<string, vscode.Uri>();
-  for (const ev of index.getEventsForLabel(eventLabel)) {
-    defUris.set(ev.uri.toString(), ev.uri);
+  // A fragment runs inside its EventComposite: the composite's selectors, conditions and
+  // level limits apply too (its definition first, the fragment's own keys win).
+  const defLabels = [...index.getFragmentParents(eventLabel), eventLabel];
+  const defs: { uri: vscode.Uri; label: string }[] = [];
+  for (const defLabel of defLabels) {
+    const seenUri = new Set<string>();
+    for (const ev of index.getEventsForLabel(defLabel)) {
+      if (!seenUri.has(ev.uri.toString())) {
+        seenUri.add(ev.uri.toString());
+        defs.push({ uri: ev.uri, label: defLabel });
+      }
+    }
   }
-  for (const du of defUris.values()) {
+  for (const { uri: du, label: defLabel } of defs) {
     const defText = du.toString() === uri.toString() ? text : (await vscode.workspace.openTextDocument(du)).getText();
-    for (const header of findEventDefs(defText, eventLabel)) {
+    for (const header of findEventDefs(defText, defLabel)) {
       for (const o of eventSelectorOutputs(defText, header.call)) {
         selectorKeys.add(o.key);
         if (o.values.length) {
@@ -282,7 +293,10 @@ export async function runEventCheck(
           const pos = lc.args.filter((x) => !x.name && !x.star);
           const pattern = decodeValue((lc.args.find((x) => x.name === 'value') ?? pos[0])?.value ?? '').value;
           const char = decodeValue((lc.args.find((x) => x.name === 'char_obj') ?? pos[1])?.value ?? '"school"').value || 'school';
-          levelLimits[`${char}_level`] = LEVELS.filter((l) => matchNumberPattern(pattern, Number(l)));
+          // Composite and fragment conditions must both hold.
+          const allowed = LEVELS.filter((l) => matchNumberPattern(pattern, Number(l)));
+          const lk = `${char}_level`;
+          levelLimits[lk] = levelLimits[lk] ? levelLimits[lk].filter((l) => allowed.includes(l)) : allowed;
         }
       }
       for (const h of placeholderHints(header.call)) {
@@ -364,7 +378,14 @@ export async function runEventCheck(
       continue;
     }
     const step = e.ref.kind === 'show_pattern' ? null : e.ref.steps[0] ?? null;
-    const keys = [...new Set(pats.flatMap((p) => placeholders(p.pathTemplate)))].filter((k) => k !== 'step' && domains[k]?.length);
+    // Values the binding call fixes (`convert_pattern("card", {"girls": "x"})`, with_values)
+    // replace the selector's domain: only that one value is needed for this image.
+    const fixed = e.ref.fixedValues ?? {};
+    const fixedKeys = Object.keys(fixed);
+    const dom = fixedKeys.length ? { ...domains, ...Object.fromEntries(fixedKeys.map((k) => [k, [fixed[k]]])) } : domains;
+    const refConstraints = fixedKeys.length ? Object.fromEntries(Object.entries(e.constraints).filter(([k]) => !(k in fixed))) : e.constraints;
+    const refGates = fixedKeys.length ? Object.fromEntries(Object.entries(gates).filter(([k]) => !(k in fixed))) : gates;
+    const keys = [...new Set(pats.flatMap((p) => placeholders(p.pathTemplate)))].filter((k) => k !== 'step' && dom[k]?.length);
     const rowKey = `${e.ref.patternKey}|${step}|${e.ref.kind === 'show_video' ? 'video' : 'image'}`;
     let row = rows.get(rowKey);
     if (!row) {
@@ -374,8 +395,13 @@ export async function runEventCheck(
     if (!row.lines.includes(e.ref.line)) {
       row.lines.push(e.ref.line);
     }
+    for (const k of keys) {
+      if (!row.keys.includes(k)) {
+        row.keys.push(k);
+      }
+    }
     row.video = e.ref.kind === 'show_video';
-    const { combos, truncated: t } = combosFor(keys, domains, e.constraints, gates);
+    const { combos, truncated: t } = combosFor(keys, dom, refConstraints, refGates);
     row.truncated ||= t;
     for (const c of combos) {
       row.combos.set(JSON.stringify(c), c);
@@ -394,6 +420,7 @@ export async function runEventCheck(
   for (const row of rows.values()) {
     const files = await filesFor(row.patternKey);
     const template = patternsByKey.get(row.patternKey)![0].pathTemplate;
+    row.template = template;
     const hasStep = placeholders(template).includes('step');
     for (const combo of row.combos.values()) {
       const candidates = files.filter(

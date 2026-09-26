@@ -16,3 +16,10 @@ node_modules/**
 !node_modules/semver/**
 !node_modules/@emnapi/**
 !node_modules/tslib/**
+studio-capture/**
+webview/**
+.github/**
+dist/**
+.claude/**
+.cursor/**
+tsconfig.scripts.json

@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    MTS Capture — BepInEx 5 plugin for Honey Select 2 StudioNeoV2.
+    Build: dotnet build -c Release. The game's assemblies come as reference-only NuGet packages
+    (feeds in nuget.config, like the IllusionMods plugins) — no game install is needed.
+    /p:DeployToGame=true /p:GamePath="D:\Honey Select" copies the DLL into the game afterwards.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net46</TargetFramework>
+    <AssemblyName>MTSCapture</AssemblyName>
+    <RootNamespace>MTSCapture</RootNamespace>
+    <LangVersion>7.3</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <!-- One version for the extension and the plugin: read from the repo's package.json. -->
+    <Version Condition="'$(Version)' == ''">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\package.json')), '"version"\s*:\s*"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value)</Version>
+    <BepInExPluginGuid>mts.eventmanager.capture</BepInExPluginGuid>
+    <BepInExPluginName>MTS Capture</BepInExPluginName>
+    <GamePath Condition="'$(GamePath)' == ''">D:\Honey Select</GamePath>
+    <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="1.1.0" PrivateAssets="all" />
+    <PackageReference Include="UnityEngine.Modules" Version="2018.4.30" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="IllusionLibs.HoneySelect2.UnityEngine.UI" Version="2018.4.11.4" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="IllusionLibs.HoneySelect2.UniRx" Version="2020.5.29.5" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="IllusionLibs.HoneySelect2.Assembly-CSharp" Version="2020.5.29.5" IncludeAssets="compile" PrivateAssets="all" />
+    <PackageReference Include="IllusionModdingAPI.HS2API" Version="$(KKAPIVersion)" IncludeAssets="compile" PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Oldest KKAPI with the studio ToolbarManager; it is also the plugin's minimum dependency. -->
+    <KKAPIVersion Condition="'$(KKAPIVersion)' == ''">1.46.1</KKAPIVersion>
+  </PropertyGroup>
+
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(DeployToGame)' == 'true'">
+    <Copy SourceFiles="$(OutputPath)MTSCapture.dll" DestinationFolder="$(GamePath)\BepInEx\plugins\MTSCapture" />
+  </Target>
+
+</Project>

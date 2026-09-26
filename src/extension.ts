@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { initWebviewAssets } from './webviewAssets';
+import { CaptureBridge } from './captureBridge';
 import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
 import { registerPreviewSerializer } from './previewPanel';
@@ -16,6 +18,7 @@ const RPY_SELECTOR: vscode.DocumentSelector = [
 ];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  initWebviewAssets(context.extensionUri);
   const index = new WorkspaceIndex();
   const diagnostics = new EventDiagnostics(index);
   const codeLens = new MtsCodeLensProvider(index);
@@ -25,6 +28,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   new PortraitDecorator(index, context, portraits);
 
   context.subscriptions.push(index, diagnostics, portraits);
+  // StudioNeoV2 capture plugin: the event editor's event is exported as a JSON bridge file.
+  context.subscriptions.push(new CaptureBridge(index));
 
   registerCommands(context, index, portraits);
   // Reopen the event preview / overview after a window reload, in their last state.

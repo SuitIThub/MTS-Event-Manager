@@ -1,8 +1,11 @@
 import { MovieDef, scanMovieDefs } from './videoResolve';
 import { mineParamUsage, ParamUsage, usageFor } from './paramUsage';
-import { scanCharacters, scanGlobals, scanPools, scanStartLevels } from './workspaceFacts';
+import { compositeStorages, scanCharacters, scanGlobals, scanInlineAddedEvents, scanPools, scanStartLevels } from './workspaceFacts';
+import { positionToOffset } from './scan';
 import * as vscode from 'vscode';
-import { parseEventsInDocument } from './parseEvents';
+import { parseEventsInDocument, parsePatternOverrides } from './parseEvents';
+import { scanRegisteredPresets } from './paperdollScript';
+import { PresetDef, setWorkspacePresets } from './paperdollResolve';
 import { parseLabelsInDocument } from './parseLabels';
 import {
   labelNameForImageCall,
@@ -39,6 +42,10 @@ interface FileFacts {
   usages: PatternUsage[];
   raw: ReturnType<typeof collectRawClasses>;
   hasEventSyntax: boolean;
+  /** `overwrite_event_image(…)` calls of this file. */
+  overrides: { label: string; pattern: EventPatternInfo }[];
+  /** `register_preset(…)` paperdoll presets of this file. */
+  presets: PresetDef[];
 }
 
 function fileFacts(uri: vscode.Uri, text: string): FileFacts {
@@ -67,6 +74,8 @@ function fileFacts(uri: vscode.Uri, text: string): FileFacts {
     usages,
     raw: collectRawClasses(uri, text),
     hasEventSyntax: /\bEvent(?:Fragment|Composite|Select)?\s*\(/.test(text),
+    overrides: parsePatternOverrides(uri, text),
+    presets: scanRegisteredPresets(text),
   };
 }
 
@@ -83,6 +92,10 @@ export class WorkspaceIndex {
   private paramUsage: ParamUsage = new Map();
   /** Pool expression → event labels added to it (`pool.add_event(ev1, …)`). */
   private pools = new Map<string, string[]>();
+  /** Fragment label → the EventComposite label(s) whose storages it is added to. */
+  private fragmentParents = new Map<string, string[]>();
+  /** Event label → mod replacement patterns (`overwrite_event_image`). */
+  private patternOverrides = new Map<string, EventPatternInfo[]>();
   /** Speakers defined globally (`define character.X`). */
   private characters = new Set<string>();
   /** Store variables assigned anywhere (`$ x =`, define, default). */
@@ -175,6 +188,11 @@ export class WorkspaceIndex {
     return this.persons;
   }
 
+  /** EventComposite label(s) a fragment label (or its sublabel) belongs to. */
+  getFragmentParents(labelName: string): string[] {
+    return this.fragmentParents.get(labelName.split('.')[0]) ?? [];
+  }
+
   getSelectorValuesForLabel(labelName: string): Record<string, string[]> {
     const names = [labelName];
     const dot = labelName.indexOf('.');
@@ -182,7 +200,12 @@ export class WorkspaceIndex {
       names.push(labelName.slice(0, dot));
     }
     const events = names.flatMap((n) => this.getEventsForLabel(n));
-    return mergeSelectorValues(events);
+    const parents = this.getFragmentParents(labelName);
+    if (!parents.length) {
+      return mergeSelectorValues(events);
+    }
+    // The composite's values are passed to the fragment; the fragment's own keys win.
+    return { ...mergeSelectorValues(parents.flatMap((n) => this.getEventsForLabel(n))), ...mergeSelectorValues(events) };
   }
 
   getPatternsForLabel(labelName: string, patternKey?: string): EventPatternInfo[] {
@@ -193,16 +216,36 @@ export class WorkspaceIndex {
     if (dot > 0) {
       names.push(labelName.slice(0, dot));
     }
-    for (const name of names) {
+    const own = new Set(names.flatMap((n) => this.getEventsForLabel(n)).flatMap((e) => e.patterns.map((p) => p.patternKey)));
+    const parents = this.getFragmentParents(labelName);
+    for (const name of [...names, ...parents]) {
+      const inherited = parents.includes(name);
       for (const ev of this.getEventsForLabel(name)) {
         for (const p of ev.patterns) {
           if (patternKey && p.patternKey !== patternKey) {
+            continue;
+          }
+          if (inherited && own.has(p.patternKey)) {
             continue;
           }
           const id = `${p.patternKey}|${p.pathTemplate}`;
           if (seen.has(id)) {
             continue;
           }
+          seen.add(id);
+          out.push(p);
+        }
+      }
+    }
+    // Mod replacements (overwrite_event_image): while the mod is on, its files are used —
+    // either set satisfies the key, so they are listed after the definition's own.
+    for (const name of [...names, ...parents]) {
+      for (const p of this.patternOverrides.get(name) ?? []) {
+        if (patternKey && p.patternKey !== patternKey) {
+          continue;
+        }
+        const id = `${p.patternKey}|${p.pathTemplate}`;
+        if (!seen.has(id)) {
           seen.add(id);
           out.push(p);
         }
@@ -219,7 +262,8 @@ export class WorkspaceIndex {
     if (dot > 0) {
       names.push(labelName.slice(0, dot));
     }
-    for (const name of names) {
+    const ownKey = names.some((n) => this.getEventsForLabel(n).some((e) => e.patterns.some((p) => p.patternKey === patternKey)));
+    for (const name of ownKey ? names : [...names, ...this.getFragmentParents(labelName)]) {
       for (const ev of this.getEventsForLabel(name)) {
         for (const p of ev.patterns) {
           if (p.patternKey !== patternKey) {
@@ -231,6 +275,13 @@ export class WorkspaceIndex {
           }
           seen.add(id);
           out.push(new vscode.Location(ev.uri, p.range));
+        }
+      }
+    }
+    for (const name of [...names, ...this.getFragmentParents(labelName)]) {
+      for (const p of this.patternOverrides.get(name) ?? []) {
+        if (p.patternKey === patternKey && p.override) {
+          out.push(new vscode.Location(p.override.uri, p.range));
         }
       }
     }
@@ -356,6 +407,8 @@ export class WorkspaceIndex {
     const characters = new Set<string>();
     const globals = new Set<string>();
     const startLevels = new Map<string, number>();
+    /** Receiver of add_event → event labels (variables and inline EventFragment(…)). */
+    const added = new Map<string, string[]>();
     for (const [uriKey, text] of texts) {
       for (const [char, lvl] of scanStartLevels(text)) {
         startLevels.set(char, Math.min(startLevels.get(char) ?? lvl, lvl));
@@ -373,9 +426,43 @@ export class WorkspaceIndex {
           .filter((l): l is string => !!l);
         if (labels.length) {
           pools.set(pool, [...new Set([...(pools.get(pool) ?? []), ...labels])]);
+          added.set(pool, [...new Set([...(added.get(pool) ?? []), ...labels])]);
+        }
+      }
+      for (const [recv, labels] of scanInlineAddedEvents(text)) {
+        added.set(recv, [...new Set([...(added.get(recv) ?? []), ...labels])]);
+      }
+    }
+    // Fragments inherit from their composite (engine: frag_image_patterns first, then the
+    // composite's image_patterns; the composite's selector values are passed along).
+    const patternOverrides = new Map<string, EventPatternInfo[]>();
+    for (const key of texts.keys()) {
+      for (const o of this.fileCache.get(key)?.overrides ?? []) {
+        patternOverrides.set(o.label, [...(patternOverrides.get(o.label) ?? []), o.pattern]);
+      }
+    }
+    this.patternOverrides = patternOverrides;
+    // The paperdoll simulation reads the game's own preset table (mods may add presets).
+    setWorkspacePresets([...texts.keys()].flatMap((key) => this.fileCache.get(key)?.presets ?? []));
+    const fragmentParents = new Map<string, string[]>();
+    for (const ev of events) {
+      if (ev.kind !== 'EventComposite') {
+        continue;
+      }
+      const text = texts.get(ev.uri.toString());
+      if (!text) {
+        continue;
+      }
+      const start = positionToOffset(text, ev.fullRange.start.line, ev.fullRange.start.character);
+      for (const storage of compositeStorages(text, start)) {
+        for (const frag of added.get(storage) ?? []) {
+          if (frag !== ev.labelName) {
+            fragmentParents.set(frag, [...new Set([...(fragmentParents.get(frag) ?? []), ev.labelName])]);
+          }
         }
       }
     }
+    this.fragmentParents = fragmentParents;
     this.pools = pools;
     this.characters = characters;
     this.globals = globals;

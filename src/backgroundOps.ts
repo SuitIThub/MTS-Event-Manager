@@ -1,4 +1,5 @@
 import { applyEdits, decodeValue, encodeString, insertArgEdit, parsePyCall, PyArg, PyCall, removeArgEdit, replaceValueEdit, TextEdit } from './pyCall';
+import { emptyBlocks, lineInsideString, statementEndLine } from './codeStructure';
 
 /**
  * Reads and surgically edits `paperdoll_manager.set_background(…)` /
@@ -226,27 +227,37 @@ export function planBackgroundEdit(text: string, line: number, want: BgSpec): { 
   return { edits: [edit], text: cur };
 }
 
-/** Delete a whole single-line image statement (image.show / show_image / show_video / show_pattern). */
-export function planRemoveLine(text: string, line: number, isImageLine: (row: string) => boolean): { edits: TextEdit[]; text: string } | { error: string } {
+/**
+ * Delete the statement that starts on `line` — all of its lines when it spans several.
+ * If it is the only statement of its block (if/else/label/menu body), it is replaced by
+ * `pass` at the same indent instead, so the script stays loadable.
+ */
+export function planDeleteStatement(text: string, line: number): { edits: TextEdit[]; text: string; replacedWithPass: boolean } {
+  const first = lineStart(text, line);
+  const endLine = statementEndLine(text, line);
+  const after = lineStart(text, endLine + 1);
+  const end = after < 0 ? text.length : after;
+  const del: TextEdit = { start: first, end, text: '' };
+  const deleted = applyEdits(text, [del]);
+  if (emptyBlocks(deleted).length <= emptyBlocks(text).length) {
+    return { edits: [del], text: deleted, replacedWithPass: false };
+  }
+  const indent = /^[ \t]*/.exec(text.slice(first))?.[0] ?? '';
+  const eolMatch = /\r?\n$/.exec(text.slice(first, end));
+  const pass: TextEdit = { start: first, end, text: indent + 'pass' + (eolMatch ? eolMatch[0] : '') };
+  return { edits: [pass], text: applyEdits(text, [pass]), replacedWithPass: true };
+}
+
+/** Delete an image statement (image.show / show_image / show_video / show_pattern), all of its lines. */
+export function planRemoveLine(text: string, line: number, isImageLine: (row: string) => boolean): { edits: TextEdit[]; text: string; replacedWithPass?: boolean } | { error: string } {
   const start = lineStart(text, line);
   if (start < 0) {
     return { error: 'The line no longer exists.' };
   }
   const nl = text.indexOf('\n', start);
-  const end = nl < 0 ? text.length : nl + 1;
   const row = text.slice(start, nl < 0 ? text.length : nl);
-  if (!isImageLine(row)) {
+  if (lineInsideString(text, line) || !isImageLine(row)) {
     return { error: 'That line is not an image statement anymore — nothing was removed.' };
   }
-  const open = (row.match(/\(/g) ?? []).length;
-  const close = (row.match(/\)/g) ?? []).length;
-  if (open !== close) {
-    return { error: 'The statement spans several lines — remove it in the code.' };
-  }
-  const edit: TextEdit = { start, end, text: '' };
-  const planned = applyEdits(text, [edit]);
-  if (planned.length !== text.length - (end - start) || planned.slice(0, start) !== text.slice(0, start) || planned.slice(start) !== text.slice(end)) {
-    return { error: 'Verification failed. Nothing was removed.' };
-  }
-  return { edits: [edit], text: planned };
+  return planDeleteStatement(text, line);
 }

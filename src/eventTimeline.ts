@@ -1,5 +1,5 @@
 import { findAllCallsByName, walkCalls } from './callParser';
-import { labelAtLine, resolvePatternKeyForVariable, topLevelLabelSpan } from './parseImageCalls';
+import { imageCallValues, labelAtLine, resolveConvertForVariable, resolvePatternKeyForVariable, topLevelLabelSpan } from './parseImageCalls';
 import {
   normalizeSpeakerToken,
   parseSpeakerChain,
@@ -12,6 +12,7 @@ import { offsetToPosition, positionToOffset, readStringLiteral } from './scan';
 import { ImageCallKind, LabelDefinition } from './types';
 import { getValueAliases, isLevelKey, LEVEL_DOMAIN, parseConditionExpr } from './paramConstraints';
 import { parsePyCall, decodeValue, PyArg } from './pyCall';
+import { codeMap, lineInsideString, statementEndLine, sayParts, SayPart } from './codeStructure';
 
 /**
  * A resolvable image reference the panel turns into an ImageCallSite for
@@ -28,6 +29,11 @@ export interface ImageRef {
   legacy?: boolean;
   /** show_image: position of this step among the call's steps (edited on its own). */
   stepIndex?: number;
+  /**
+   * Values the binding call fixes for this image (`convert_pattern("card", {"girls": "x"})`,
+   * `**with_values(kwargs, girls = "x")`) — they override the selectors' values.
+   */
+  fixedValues?: Record<string, string>;
   stepCount?: number;
 }
 
@@ -51,6 +57,13 @@ export interface TimelineStop {
   branch?: string;
   /** `random_say(...)`: the alternative lines the game picks one of. */
   alternatives?: SayAlternative[];
+  /**
+   * Monologue mode: this stop is part `part` of `partCount` say statements Ren'Py makes of
+   * one triple-quoted string (split at blank lines); `partLine` is where its text starts.
+   */
+  part?: number;
+  partCount?: number;
+  partLine?: number;
 }
 
 export interface SayAlternative {
@@ -142,21 +155,22 @@ export interface TimelineOptions {
 // ── Raw statement recognizers ─────────────────────────────────────────────
 
 type Raw =
-  | { t: 'say'; line: number; chain: string; firstIdent: string; text: string }
+  | { t: 'say'; line: number; chain: string; firstIdent: string; text: string; part?: number; partCount?: number; partLine?: number }
   | { t: 'renpyPause'; line: number; duration?: string }
   | { t: 'barePause'; line: number; duration?: string }
-  | { t: 'show'; line: number; character: number; variableName: string; patternKey?: string; step: number }
+  | { t: 'show'; line: number; character: number; variableName: string; patternKey?: string; fixedValues?: Record<string, string>; step: number }
   | {
       t: 'showImage';
       line: number;
       character: number;
       variableName: string;
       patternKey?: string;
+      fixedValues?: Record<string, string>;
       steps: number[];
       pause: boolean;
     }
-  | { t: 'showPattern'; line: number; character: number; patternKey: string }
-  | { t: 'showVideo'; line: number; character: number; variableName: string; patternKey?: string; step: number; pause: boolean }
+  | { t: 'showPattern'; line: number; character: number; patternKey: string; fixedValues?: Record<string, string> }
+  | { t: 'showVideo'; line: number; character: number; variableName: string; patternKey?: string; fixedValues?: Record<string, string>; step: number; pause: boolean }
   | {
       t: 'background';
       line: number;
@@ -164,6 +178,7 @@ type Raw =
       kind: 'set_background' | 'set_background_path';
       variableName?: string;
       patternKey?: string;
+      fixedValues?: Record<string, string>;
       step?: number;
       literalPath?: string;
     }
@@ -214,6 +229,22 @@ export function videoPauseFlag(tail: string): boolean {
   return pauseFlag(tail) || /^\s*,\s*True\b/.test(tail);
 }
 
+/**
+ * One raw say per say statement the engine runs: a triple-quoted string is split into
+ * several (Ren'Py monologue mode), all on the statement's line.
+ */
+function pushSay(raws: Raw[], line: number, chain: string, firstIdent: string, text: string, parts: SayPart[] | undefined): void {
+  if (!parts) {
+    raws.push({ t: 'say', line, chain, firstIdent, text });
+    return;
+  }
+  if (parts.length <= 1) {
+    raws.push({ t: 'say', line, chain, firstIdent, text: parts[0]?.text ?? '', partLine: parts[0]?.line });
+    return;
+  }
+  parts.forEach((p, i) => raws.push({ t: 'say', line, chain, firstIdent, text: p.text, part: i, partCount: parts.length, partLine: p.line }));
+}
+
 function scanRawStatements(
   text: string,
   labels: LabelDefinition[],
@@ -229,14 +260,21 @@ function scanRawStatements(
   // Dialogue via the shared say scanner (keeps subtitles, drops structural keywords).
   const sayLines = new Set<number>();
   for (const say of scanSayStatements(text, { start: startLine, end: last })) {
-    raws.push({ t: 'say', line: say.line, chain: say.chain, firstIdent: say.firstIdent, text: say.text });
+    pushSay(raws, say.line, say.chain, say.firstIdent, say.text, say.parts);
     sayLines.add(say.line);
   }
 
+  // `var = convert_pattern("key", {…})` bound before `line`: its key and the values it fixes.
+  const bindingOf = (variable: string, line: number) => {
+    const c = resolveConvertForVariable(text, labels, variable, line);
+    return { patternKey: c?.key, fixedValues: c?.values };
+  };
+  const inString = codeMap(text).inString;
   for (let line = startLine; line < last; line++) {
     const row = lines[line];
     const trimmed = row.trim();
-    if (!trimmed || trimmed.startsWith('#') || sayLines.has(line)) {
+    // Text inside a multi-line string is never a statement ("image.show(" in dialogue…).
+    if (!trimmed || trimmed.startsWith('#') || sayLines.has(line) || inString[line]) {
       // Dialogue lines are handled above; skipping them keeps `.show(` etc. inside
       // spoken strings from being mistaken for image calls.
       continue;
@@ -262,7 +300,7 @@ function scanRawStatements(
         line,
         character,
         variableName: m[1],
-        patternKey: resolvePatternKeyForVariable(text, labels, m[1], line),
+        ...bindingOf(m[1], line),
         steps,
         pause: pauseFlag(m[2]),
       });
@@ -274,7 +312,7 @@ function scanRawStatements(
         line,
         character,
         variableName: m[1],
-        patternKey: resolvePatternKeyForVariable(text, labels, m[1], line),
+        ...bindingOf(m[1], line),
         step: parseInt(m[2], 10),
         pause: videoPauseFlag(m[3]),
       });
@@ -286,13 +324,14 @@ function scanRawStatements(
         line,
         character,
         variableName: m[1],
-        patternKey: resolvePatternKeyForVariable(text, labels, m[1], line),
+        ...bindingOf(m[1], line),
         step: parseInt(m[2], 10),
       });
       continue;
     }
     if ((m = SHOW_PATTERN_RE.exec(row))) {
-      raws.push({ t: 'showPattern', line, character, patternKey: m[1] });
+      const callee = positionToOffset(text, line, row.indexOf('show_pattern'));
+      raws.push({ t: 'showPattern', line, character, patternKey: m[1], fixedValues: imageCallValues(text, callee) });
       continue;
     }
     if ((m = SET_BG_INDEX_RE.exec(row))) {
@@ -302,7 +341,7 @@ function scanRawStatements(
         character,
         kind: 'set_background',
         variableName: m[1],
-        patternKey: resolvePatternKeyForVariable(text, labels, m[1], line),
+        ...bindingOf(m[1], line),
         step: parseInt(m[2], 10),
       });
       continue;
@@ -426,9 +465,13 @@ function scanRawStatements(
     if (sayLines.has(line) || !/^[ \t]*["']/.test(row)) {
       continue;
     }
-    const lit = readStringLiteral(row, 0);
-    if (lit && /^\s*(#.*)?\r?$/.test(row.slice(lit.end))) {
-      raws.push({ t: 'say', line, chain: '', firstIdent: '', text: lit.value });
+    // The literal may continue on later lines (""" … """): read it in the full text.
+    const at = positionToOffset(text, line, indentLen(row));
+    const lit = readStringLiteral(text, at);
+    const nl = lit ? text.indexOf('\n', lit.end) : -1;
+    if (lit && /^\s*(#.*)?\r?$/.test(text.slice(lit.end, nl < 0 ? text.length : nl))) {
+      const parts = sayParts(text, at);
+      pushSay(raws, line, '', '', parts ? '' : lit.value.replace(/[ \t]*\r?\n[ \t]*/g, ' '), parts);
     }
   }
 
@@ -438,29 +481,18 @@ function scanRawStatements(
 
 /** Lines in [from, to) where a new statement starts (not inside an open bracket). */
 function statementStarts(text: string, lines: readonly string[], from: number, to: number): number[] {
+  // Statement starts in [from, to): not inside a multi-line string, not a continuation of
+  // an open bracket or a backslash line (codeStructure follows strings across lines).
   const out: number[] = [];
-  let depth = 0;
-  for (let line = from; line < to; line++) {
+  let line = from;
+  while (line < to) {
     const row = lines[line] ?? '';
-    if (depth === 0 && row.trim() && !row.trim().startsWith('#')) {
-      out.push(line);
+    if (lineInsideString(text, line) || !row.trim() || row.trim().startsWith('#')) {
+      line++;
+      continue;
     }
-    for (let i = 0; i < row.length; i++) {
-      const c = row[i];
-      if (c === '#') {
-        break;
-      }
-      if (c === '"' || c === "'") {
-        const lit = readStringLiteral(row, i);
-        i = lit ? lit.end - 1 : row.length;
-        continue;
-      }
-      if (c === '(' || c === '[' || c === '{') {
-        depth++;
-      } else if ((c === ')' || c === ']' || c === '}') && depth > 0) {
-        depth--;
-      }
-    }
+    out.push(line);
+    line = Math.max(line, statementEndLine(text, line)) + 1;
   }
   return out;
 }
@@ -727,6 +759,9 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
         image: state.currentImage,
         background: state.currentBg,
         branch,
+        part: raw.part,
+        partCount: raw.partCount,
+        partLine: raw.partLine,
       });
       return;
     }
@@ -750,6 +785,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
         character: raw.character,
         variableName: raw.variableName,
         patternKey: raw.patternKey,
+        fixedValues: raw.fixedValues,
         steps: [raw.step],
       };
       pushMarker(state, {
@@ -770,6 +806,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
           character: raw.character,
           variableName: raw.variableName,
           patternKey: raw.patternKey,
+          fixedValues: raw.fixedValues,
           steps: [step],
           stepIndex: i,
           stepCount: raw.steps.length,
@@ -804,6 +841,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
         line: raw.line,
         character: raw.character,
         patternKey: raw.patternKey,
+        fixedValues: raw.fixedValues,
         steps: [],
       };
       pushMarker(state, {
@@ -825,6 +863,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
         character: raw.character,
         variableName: raw.variableName,
         patternKey: raw.patternKey,
+        fixedValues: raw.fixedValues,
         steps: [raw.step],
       };
       state.currentImage = image;
@@ -856,6 +895,7 @@ function handleRaw(state: WalkState, raw: Raw, branch?: string): void {
         character: raw.character,
         variableName: raw.variableName,
         patternKey: raw.patternKey,
+        fixedValues: raw.fixedValues,
         steps: raw.step !== undefined ? [raw.step] : [],
         literalPath: raw.literalPath,
       };

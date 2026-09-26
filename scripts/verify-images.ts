@@ -3,15 +3,17 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { parseEventsInDocument } from '../src/parseEvents';
 import { parseLabelsInDocument } from '../src/parseLabels';
 import { parseImageCallsInDocument, labelNameForImageCall } from '../src/parseImageCalls';
 import { paramConstraintsForLine, parseConditionExpr } from '../src/paramConstraints';
 import { templateToRegex } from '../src/patternResolve';
-import * as vscode from 'vscode';
+import { GAME, SCRIPTS, requireGame } from './testEnv';
 
-const MTS = 'M:\\MTS Project\\Mind the School\\game\\scripts';
-const GAME = 'M:\\MTS Project\\Mind the School\\game';
+requireGame('verify-images', 'full');
+
+const MTS = SCRIPTS;
 
 function read(rel: string) {
   const full = path.join(MTS, rel);

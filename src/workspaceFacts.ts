@@ -1,4 +1,4 @@
-import { parsePyCall } from './pyCall';
+import { decodeValue, parsePyCall } from './pyCall';
 
 /**
  * Workspace-wide facts the event check, the trigger simulator and the event overview
@@ -12,6 +12,50 @@ export interface PoolFacts {
 }
 
 const ADD_EVENT_RE = /\.\s*add_event\s*\(/g;
+
+/**
+ * `storage.add_event(a, EventFragment(2, "label", …), …)` → receiver → event labels written
+ * inline (the variables are resolved by the caller, see scanPools).
+ */
+export function scanInlineAddedEvents(text: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  ADD_EVENT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ADD_EVENT_RE.exec(text)) !== null) {
+    const lineStart = text.lastIndexOf('\n', m.index) + 1;
+    const receiver = text.slice(lineStart, m.index).replace(/^\s*\$?\s*/, '').trim();
+    if (!receiver || receiver.includes('#') || /^def\b|^class\b/.test(receiver)) {
+      continue;
+    }
+    const call = parsePyCall(text, text.indexOf('add_event', m.index));
+    if (!call) {
+      continue;
+    }
+    const labels: string[] = [];
+    for (const a of call.args) {
+      const inner = !a.name && !a.star && /^Event[A-Za-z]*\s*\(/.test(a.value.trim()) ? parsePyCall(a.value.trim(), 0) : undefined;
+      const label = inner?.args.filter((x) => !x.name && !x.star)[1];
+      const d = label ? decodeValue(label.value) : undefined;
+      if (d?.kind === 'string' && d.value) {
+        labels.push(d.value);
+      }
+    }
+    if (labels.length) {
+      out.set(receiver, [...(out.get(receiver) ?? []), ...labels]);
+    }
+  }
+  return out;
+}
+
+/** `EventComposite(prio, "label", [storage_a, storage_b], …)` → the fragment storage names. */
+export function compositeStorages(text: string, callStart: number): string[] {
+  const call = parsePyCall(text, callStart);
+  const list = call?.args.filter((a) => !a.name && !a.star)[2]?.value.trim();
+  if (!list || !list.startsWith('[')) {
+    return [];
+  }
+  return [...list.slice(1, -1).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map((x) => x[0]);
+}
 
 /** `pool.add_event(a, b, …)` → pool → variable names. */
 export function scanPools(text: string): Map<string, string[]> {

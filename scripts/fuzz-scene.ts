@@ -1,10 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { parseLabelsInDocument } from '../src/parseLabels';
-import { buildPersonIndex } from '../src/parsePersons';
-import { buildEventTimeline } from '../src/eventTimeline';
-import { findEventDefs } from '../src/eventDef';
 import {
   logicalStatements,
   menuCallAt,
@@ -15,9 +11,16 @@ import {
   scanLabels,
   topLevelSpan,
 } from '../src/sceneOps';
+import { checkStructure } from '../src/codeStructure';
+import { parseLabelsInDocument } from '../src/parseLabels';
+import { buildPersonIndex } from '../src/parsePersons';
+import { buildEventTimeline } from '../src/eventTimeline';
+import { findEventDefs } from '../src/eventDef';
 import { parseSeriesLine, planSeriesStepEdit } from '../src/imageSeries';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
 
-const GAME = 'M:/MTS Project/Mind the School/game';
+requireGame('fuzz-scene', 'scripts');
+
 function walk(d: string, o: string[] = []): string[] {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
     const p = path.join(d, e.name);
@@ -44,6 +47,8 @@ for (const f of walk(GAME)) {
         const r = planMoveStatement(text, st.start, dir);
         if ('error' in r) { moveRefused++; continue; }
         moveOk++;
+        const sc = checkStructure(text, r.edits);
+        if (sc) fail(`${name}:${st.start + 1} move ${dir} refused by the structure guard: ${sc}`);
         const back = planMoveStatement(r.newText, r.newLine, dir === -1 ? 1 : -1);
         if ('error' in back) { fail(`${name}:${st.start + 1} move ${dir} could not move back: ${back.error}`); continue; }
         if (back.newText !== text) fail(`${name}:${st.start + 1} move ${dir} + back did not round-trip`);
@@ -60,6 +65,8 @@ for (const f of walk(GAME)) {
     menus++;
     const r = planAddMenuChoice(text, line, 'fuzz_choice', 'Fuzz choice');
     if ('error' in r) { fail(`${name}:${line + 1} add choice: ${r.error}`); return; }
+    const sc = checkStructure(text, r.edits);
+    if (sc) fail(`${name}:${line + 1} add choice refused by the structure guard: ${sc}`);
     const labels = parseLabelsInDocument(vscode.Uri.file(f), r.newText);
     const span = topLevelSpan(r.newText.split('\n'), line)!;
     if (!labels.some((l) => l.name === `${span.name}.fuzz_choice`)) fail(`${name}:${line + 1} branch label missing`);
@@ -82,12 +89,15 @@ for (const f of walk(GAME)) {
     const count = (menuCallAt(r.newText, line)?.args.filter((a) => a.call?.name === 'MenuElement').length ?? 0);
     const rem = planRemoveMenuChoice(r.newText, line, count - 1, 'fuzz_choice');
     if ('error' in rem) fail(`${name}:${line + 1} remove choice: ${rem.error}`);
+    else if (checkStructure(r.newText, rem.edits)) fail(`${name}:${line + 1} remove choice refused by the structure guard: ${checkStructure(r.newText, rem.edits)}`);
   });
   // 3) New event in every file that already defines events.
   if (findEventDefs(text).length) {
     newEvents++;
     const r = planNewEvent(text, { label: 'fuzz_new_event', priority: 3, pool: 'cafeteria_events["order_food"]', patternPath: 'images/events/fuzz/fuzz <step>.webp', items: ['TimeCondition(daytime = "d")'] });
     if ('error' in r) { fail(`${name} new event: ${r.error}`); continue; }
+    const scn = 'edits' in r ? checkStructure(text, (r as { edits: Parameters<typeof checkStructure>[1] }).edits) : undefined;
+    if (scn) fail(`${name} new event refused by the structure guard: ${scn}`);
     const labels = parseLabelsInDocument(vscode.Uri.file(f), r.newText);
     const lab = labels.find((l) => l.name === 'fuzz_new_event');
     if (!lab) { fail(`${name} new label missing`); continue; }

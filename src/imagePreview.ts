@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { jsonScript, newNonce, scriptSrc, scriptTag, webviewAssetRoots } from './webviewAssets';
 import * as vscode from 'vscode';
 import { formatPatternParams } from './patternResolve';
 import { ResolvedImageInfo } from './types';
@@ -29,7 +30,7 @@ export function showImagePreviewCarousel(
     {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: roots,
+      localResourceRoots: [...roots, ...webviewAssetRoots()],
     }
   );
   panel.onDidDispose(() => {
@@ -91,12 +92,12 @@ function buildHtml(
     patternKey: string;
   }[]
 ): string {
-  const payload = JSON.stringify(items).replace(/</g, '\\u003c');
+  const nonce = newNonce();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; ${scriptSrc(nonce)};" />
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; padding: 12px; }
   .layout { display: flex; gap: 16px; align-items: flex-start; }
@@ -133,34 +134,8 @@ function buildHtml(
       <div class="value" id="pattern"></div>
     </div>
   </div>
-  <script>
-    const items = ${payload};
-    const vscode = acquireVsCodeApi();
-    let i = 0;
-    const img = document.getElementById('img');
-    const counter = document.getElementById('counter');
-    function render() {
-      if (!items.length) return;
-      const it = items[i];
-      img.src = it.src;
-      counter.textContent = (i + 1) + ' / ' + items.length;
-      document.getElementById('name').textContent = it.name || '—';
-      document.getElementById('rel').textContent = it.relativePath || '—';
-      document.getElementById('full').textContent = it.path || '—';
-      document.getElementById('params').textContent = it.params || '(none)';
-      document.getElementById('pattern').textContent = it.patternKey || '—';
-    }
-    document.getElementById('prev').onclick = () => { i = (i - 1 + items.length) % items.length; render(); };
-    document.getElementById('next').onclick = () => { i = (i + 1) % items.length; render(); };
-    document.getElementById('open').onclick = () => {
-      if (items[i]) vscode.postMessage({ type: 'open', path: items[i].path });
-    };
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowLeft') document.getElementById('prev').click();
-      if (e.key === 'ArrowRight') document.getElementById('next').click();
-    });
-    render();
-  </script>
+  ${jsonScript('payload', items)}
+  ${scriptTag(webview, 'imagePreview', nonce)}
 </body>
 </html>`;
 }

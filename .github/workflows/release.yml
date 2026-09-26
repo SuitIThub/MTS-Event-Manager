@@ -1,0 +1,168 @@
+# Build, test and release the MTS Event Manager extension and the MTS Capture plugin.
+#
+#   - pull requests: checks only
+#   - push to main:  checks; if the version in package.json has no GitHub release yet
+#                    (e.g. the very first release, or after a version bump), build both,
+#                    create the tag v<version> and publish the release with both assets.
+#                    Release notes = CHANGELOG.md sections of all versions since the last release.
+#   - manual run:    same as a push (optionally skipping the game fuzzers)
+#
+# Bumping a version: change "version" in package.json (the plugin reads it too) and add a
+# "## [x.y.z] - date" section to CHANGELOG.md — the check fails without it.
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".cursor/**"
+      - ".claude/**"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_game_tests:
+        description: "Skip the fuzzers that run against the Mind the School scripts"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Windows: the extension ships sharp's native Windows binaries inside the VSIX.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION"
+
+      - name: Changelog has this version
+        run: node scripts/release-notes.js --check "${{ steps.version.outputs.version }}"
+
+      # ── Extension ──
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run compile
+
+      - name: Checkout game scripts (Mind the School)
+        if: ${{ !inputs.skip_game_tests }}
+        uses: actions/checkout@v4
+        with:
+          repository: SuIT-pub/Mind-the-School
+          path: game-ws
+          # Only the Ren'Py sources — the repository is large.
+          sparse-checkout: |
+            game/scripts
+            game/mods
+          filter: blob:none
+          fetch-depth: 1
+
+      - name: Tests
+        env:
+          # The fuzzers run over the game scripts; fixture checks need the full local game
+          # (with images) and skip themselves here.
+          MTS_WS_ROOT: ${{ inputs.skip_game_tests && 'none' || format('{0}/game-ws', github.workspace) }}
+        run: npm run verify
+
+      # ── Plugin ──
+      - name: Build plugin
+        run: dotnet build studio-capture/MTSCapture.csproj -c Release
+
+      - name: Plugin tests
+        run: dotnet run --project studio-capture/tests/MTSCapture.Tests.csproj -c Release
+
+      # ── Release (main only, once per version) ──
+      - name: Existing release
+        id: existing
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api() { curl -sS -o "$2" -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/$1"; }
+          CODE="$(api "releases/tags/${{ steps.version.outputs.tag }}" /dev/null)"
+          if [[ "$CODE" == "200" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.version.outputs.tag }} exists — nothing to publish."
+            exit 0
+          fi
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          # The last published release (none yet → the notes show this version only).
+          CODE="$(api "releases/latest" latest.json)"
+          PREV=""
+          if [[ "$CODE" == "200" ]]; then
+            PREV="$(node -p "require('./latest.json').tag_name.replace(/^v/, '')")"
+          fi
+          echo "previous=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Previous release: ${PREV:-none}"
+
+      - name: Package
+        if: github.event_name != 'pull_request' && steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          mkdir -p dist/plugin/BepInEx/plugins/MTSCapture
+          npx vsce package --skip-license --out "dist/mts-event-manager-$V.vsix"
+          cp studio-capture/bin/Release/MTSCapture.dll dist/plugin/BepInEx/plugins/MTSCapture/
+          cp studio-capture/README.md dist/plugin/BepInEx/plugins/MTSCapture/README.md
+          (cd dist/plugin && 7z a -tzip "../MTSCapture-$V.zip" BepInEx > /dev/null)
+          ARGS=(--version "$V" --out dist/notes.md)
+          if [[ -n "${{ steps.existing.outputs.previous }}" ]]; then ARGS+=(--previous "${{ steps.existing.outputs.previous }}"); fi
+          node scripts/release-notes.js "${ARGS[@]}"
+          cat >> dist/notes.md <<EOF
+
+          ---
+          **Install:** the extension via *Extensions → … → Install from VSIX* (\`mts-event-manager-$V.vsix\`);
+          the plugin by extracting \`MTSCapture-$V.zip\` into the Honey Select 2 folder (BepInEx 5 + KKAPI ≥ 1.46 required).
+          EOF
+          ls -la dist
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' && steps.existing.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: MTS Event Manager ${{ steps.version.outputs.version }}
+          body_path: dist/notes.md
+          files: |
+            dist/mts-event-manager-${{ steps.version.outputs.version }}.vsix
+            dist/MTSCapture-${{ steps.version.outputs.version }}.zip
+          fail_on_unmatched_files: true

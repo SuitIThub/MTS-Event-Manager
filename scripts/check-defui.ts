@@ -6,6 +6,9 @@ import { buildCallCode, buildEventDefModel, findEventDefs, insertSlotFor, planDe
 import { encodeValue, parsePyCall } from '../src/pyCall';
 import { buildDefDomains, EventDefEditor } from '../src/eventDefEditor';
 import { mineParamUsage, usageFor } from '../src/paramUsage';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
+
+requireGame('check-defui', 'full');
 
 /**
  * Drive the definition editor's webview client against a tiny fake DOM with a real model,
@@ -60,7 +63,6 @@ const fakeWindow = { addEventListener: (_t: string, fn: Listener) => windowListe
 const fakeVscode = { postMessage: (m: any) => { posted.push(m); if (m.type === 'def:op' || m.type === 'def:add') postedLog.push(m); } };
 
 // ── Real model ──
-const GAME = 'M:/MTS Project/Mind the School/game';
 function walk(d: string, o: string[] = []): string[] { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p, o); else if (e.name.endsWith('.rpy')) o.push(p); } return o; }
 const texts = new Map<string, string>(); const raw = [];
 for (const f of walk(GAME)) { const t = fs.readFileSync(f, 'utf8'); const u = vscode.Uri.file(f); texts.set(u.toString(), t); raw.push(...collectRawClasses(u, t)); }
@@ -82,7 +84,7 @@ const dom0 = domainsOf(text, header, model);
 // ── Mount & drive ──
 let problems = 0;
 const check = (ok: boolean, msg: string) => { if (!ok) { problems++; console.log('FAIL', msg); } else console.log('ok  ', msg); };
-const mount = new Function('document', 'window', 'vscode', EventDefEditor.clientScript() + '\nreturn mountEventDefEditor(vscode);');
+const mount = new Function('document', 'window', 'vscode', fs.readFileSync(path.join(__dirname, '..', 'webview', 'eventDefEditor.js'), 'utf8') + '\nreturn mountEventDefEditor(vscode);');
 const api = mount(fakeDocument, fakeWindow, fakeVscode);
 const send = (m: any) => windowListeners.forEach((fn) => fn({ data: m }));
 send({ type: 'def:model', labelName: 'nm_potion_hangover_miwa', defs: [{ uri: 'file:///x.rpy', file: 'x.rpy', line: 80, start: header.call.start, model, ...dom0 }], classes });

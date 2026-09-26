@@ -1,0 +1,8 @@
+{
+  "//": "Webview bundles: the listed files are concatenated in this order into out/webview/<name>.js (one classic script — shared top-level scope, like the former inline scripts). Built by scripts/build-webview.js.",
+  "preview": ["preview.js", "paperdollEditor.js", "eventDefEditor.js", "preview-init.js"],
+  "paperdollPanel": ["paperdollEditor.js", "paperdollPanel-init.js"],
+  "overview": ["overview.js"],
+  "imagePreview": ["imagePreview.js"],
+  "portraitPanel": ["portraitPanel.js"]
+}

@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { buildSchemaRegistry, collectRawClasses } from '../src/parseSchema';
 import {
   buildCallCode,
   buildEventDefModel,
@@ -10,8 +9,11 @@ import {
   planDefOp,
   schemaErrors,
 } from '../src/eventDef';
+import { buildSchemaRegistry, collectRawClasses } from '../src/parseSchema';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
 
-const GAME = 'M:/MTS Project/Mind the School/game';
+requireGame('fuzz-eventdef', 'scripts');
+
 function walk(d: string, o: string[] = []): string[] {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
     const p = path.join(d, e.name);

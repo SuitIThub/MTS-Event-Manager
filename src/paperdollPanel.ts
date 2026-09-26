@@ -1,4 +1,5 @@
 import { lastColumn, trackColumn } from './panelPlacement';
+import { jsonScript, newNonce, scriptSrc, scriptTag, webviewAssetRoots } from './webviewAssets';
 import * as vscode from 'vscode';
 import { WorkspaceIndex } from './indexer';
 import { PaperdollEditor } from './paperdollEditor';
@@ -49,7 +50,7 @@ export async function showPaperdollEditor(
     return;
   }
 
-  const roots = (await getImageRoots()).map((r) => vscode.Uri.file(r));
+  const roots = [...(await getImageRoots()).map((r) => vscode.Uri.file(r)), ...webviewAssetRoots()];
   panel = vscode.window.createWebviewPanel('mtsPaperdoll', 'MTS Paperdoll', { viewColumn: lastColumn(context, 'paperdoll', vscode.ViewColumn.Beside), preserveFocus: false }, {
     enableScripts: true,
     retainContextWhenHidden: true,
@@ -80,7 +81,8 @@ export async function showPaperdollEditor(
 }
 
 function html(webview: vscode.Webview): string {
-  const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';`;
+  const nonce = newNonce();
+  const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src 'unsafe-inline'; ${scriptSrc(nonce)};`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -98,13 +100,8 @@ function html(webview: vscode.Webview): string {
 <div class="host">
   ${PaperdollEditor.controlsHtml()}
 </div>
-<script>
-${PaperdollEditor.clientScript()}
-const vscode = acquireVsCodeApi();
-mountPaperdollEditor(vscode);
-// Ask for the scene on (re)load — VS Code reloads the page when the panel moves windows.
-vscode.postMessage({ type: 'ready' });
-</script>
+${jsonScript('pd-fields', PaperdollEditor.clientFields())}
+${scriptTag(webview, 'paperdollPanel', nonce)}
 </body>
 </html>`;
 }

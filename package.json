@@ -1,8 +1,8 @@
 {
   "name": "mts-event-manager",
   "displayName": "MTS Event Manager",
-  "description": "Event-Label navigation, snippet helpers, image and paperdoll preview for Mind the School RenPy events.",
-  "version": "0.5.7",
+  "description": "Event editor, timeline preview, checks and authoring helpers for Mind the School (Ren'Py) events and mods — with a StudioNeoV2 capture plugin.",
+  "version": "0.6.0",
   "publisher": "mts",
   "engines": {
     "vscode": "^1.85.0"
@@ -93,25 +93,35 @@
     "configuration": {
       "title": "MTS Event Manager",
       "properties": {
+        "mtsEventManager.capture.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Export the event open in the event editor for the StudioNeoV2 capture plugin (MTS Capture): its image targets, as a JSON bridge file."
+        },
+        "mtsEventManager.capture.bridgeFile": {
+          "type": "string",
+          "default": "",
+          "description": "Bridge file for the StudioNeoV2 capture plugin. Empty: %LOCALAPPDATA%\\MTS-Event-Manager\\capture\\active-event.json (the plugin's default too)."
+        },
         "mtsEventManager.enableCodeLens": {
           "type": "boolean",
           "default": true,
-          "description": "Show CodeLens for events and labels."
+          "description": "Show CodeLens on scene labels (preview, go to / edit the event definition) and on Event(...) definitions (go to label, + Condition / + Selector / + Pattern)."
         },
         "mtsEventManager.enableDiagnostics": {
           "type": "boolean",
           "default": true,
-          "description": "Validate Event argument structure against discovered schemas."
+          "description": "Validate the arguments of Event(...) definitions against the condition/selector/option classes discovered in the workspace."
         },
         "mtsEventManager.enableImagePreview": {
           "type": "boolean",
           "default": true,
-          "description": "Show CodeLens and hover image previews on pattern show calls."
+          "description": "Hover previews (auto-rotating carousel) on image calls: image.show, show_image, show_pattern, show_video, set_background."
         },
         "mtsEventManager.enablePaperdoll": {
           "type": "boolean",
           "default": true,
-          "description": "Show paperdoll CodeLens, hover previews, and the paperdoll editor on register/display calls."
+          "description": "Hover previews of the resolved paperdoll sprite on register_paperdoll / .display(...) calls."
         },
         "mtsEventManager.enablePortraits": {
           "type": "boolean",
@@ -138,21 +148,34 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap",
-    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap --watch=forever",
-    "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js && npm run verify:webview && npm run verify:editor",
+    "compile": "node scripts/build-webview.js && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap",
+    "watch": "node scripts/build-webview.js && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:sharp --format=cjs --platform=node --sourcemap --watch=forever",
+    "verify": "esbuild ./scripts/verify.ts --bundle --outfile=scripts/verify.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/verify.js && npm run verify:units && npm run verify:webview && npm run verify:editor",
     "verify:webview": "esbuild ./scripts/check-webview.ts --bundle --outfile=scripts/check-webview.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-webview.js && esbuild ./scripts/check-defui.ts --bundle --outfile=scripts/check-defui.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-defui.js && esbuild ./scripts/check-previewui.ts --bundle --outfile=scripts/check-previewui.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-previewui.js && esbuild ./scripts/check-images.ts --bundle --outfile=scripts/check-images.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/check-images.js && esbuild ./scripts/check-video.ts --bundle --outfile=scripts/check-video.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/check-video.js && esbuild ./scripts/check-events.ts --bundle --outfile=scripts/check-events.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-events.js",
-    "verify:editor": "esbuild ./scripts/fuzz-pycall.ts --bundle --outfile=scripts/fuzz-pycall.js --platform=node --format=cjs && node scripts/fuzz-pycall.js && esbuild ./scripts/fuzz-eventdef.ts --bundle --outfile=scripts/fuzz-eventdef.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-eventdef.js && esbuild ./scripts/fuzz-scene.ts --bundle --outfile=scripts/fuzz-scene.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-scene.js"
+    "verify:editor": "esbuild ./scripts/fuzz-pycall.ts --bundle --outfile=scripts/fuzz-pycall.js --platform=node --format=cjs && node scripts/fuzz-pycall.js && esbuild ./scripts/fuzz-eventdef.ts --bundle --outfile=scripts/fuzz-eventdef.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-eventdef.js && esbuild ./scripts/fuzz-scene.ts --bundle --outfile=scripts/fuzz-scene.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js && node scripts/fuzz-scene.js",
+    "verify:units": "esbuild ./scripts/check-units.ts --bundle --outfile=scripts/check-units.js --platform=node --format=cjs --alias:vscode=./scripts/vscode-stub.js --external:sharp && node scripts/check-units.js",
+    "typecheck": "tsc --noEmit -p . && tsc -p tsconfig.scripts.json",
+    "build:webview": "node scripts/build-webview.js",
+    "package": "vsce package --skip-license --out dist/"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/sharp": "^0.31.1",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
     "gifenc": "^1.0.3",
     "sharp": "^0.35.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SuitIThub/MTS-Event-Manager.git"
+  },
+  "homepage": "https://github.com/SuitIThub/MTS-Event-Manager#readme",
+  "bugs": {
+    "url": "https://github.com/SuitIThub/MTS-Event-Manager/issues"
   }
 }

@@ -2,12 +2,14 @@ import * as vscode from 'vscode';
 import { findAllCallsByName, findCallsByName, secondPositionalString, walkCalls } from './callParser';
 import { positionToOffset, readStringLiteral } from './scan';
 import { parsePyCall } from './pyCall';
+import { stringExprValue } from './stringExpr';
+import { offsetToPosition } from './scan';
 import { selectorValueMap } from './selectorValues';
 import { EVENT_KINDS, EventDefinition, EventKind, EventPatternInfo, ParsedCall } from './types';
 
 const EVENT_NAME_SET = new Set<string>(EVENT_KINDS);
 
-function extractPatternsFromEventCall(call: import('./types').ParsedCall): EventPatternInfo[] {
+function extractPatternsFromEventCall(call: import('./types').ParsedCall, text: string): EventPatternInfo[] {
   const patterns: EventPatternInfo[] = [];
   walkCalls(call, (c) => {
     if (c.name !== 'Pattern') {
@@ -18,10 +20,12 @@ function extractPatternsFromEventCall(call: import('./types').ParsedCall): Event
       if (arg.name) {
         continue;
       }
-      const lit = readStringLiteral(arg.text, 0);
-      if (lit) {
-        positionals.push(lit.value);
+      // Literals and simple concatenations (`base_path + "x <step>.webp"`).
+      const value = stringExprValue(text, arg.text, positionToOffset(text, arg.range.start.line, arg.range.start.character));
+      if (value === undefined) {
+        break;
       }
+      positionals.push(value);
     }
     if (positionals.length >= 2) {
       patterns.push({
@@ -94,7 +98,7 @@ export function parseEventsInDocument(uri: vscode.Uri, text: string): EventDefin
       fullRange: call.range,
       startRange,
       variableName,
-      patterns: extractPatternsFromEventCall(call),
+      patterns: extractPatternsFromEventCall(call, text),
       selectorValues: extractSelectorValuesFromEventCall(text, call),
     });
   }
@@ -186,6 +190,64 @@ export function extractSelectorValuesFromEventCall(
       }
     }
     out[key] = [...set];
+  }
+  return out;
+}
+
+const OVERWRITE_RE = /\boverwrite_event_image\s*\(/g;
+
+/**
+ * `overwrite_event_image("event", "key", Pattern("key", "images/…"))` — a mod replacing an
+ * event's pattern (the engine prefixes the path into the mod's folder, which the image
+ * resolver searches as its own root). Returns event label → replacement patterns.
+ */
+export function parsePatternOverrides(uri: vscode.Uri, text: string): { label: string; pattern: EventPatternInfo }[] {
+  const out: { label: string; pattern: EventPatternInfo }[] = [];
+  if (!text.includes('overwrite_event_image')) {
+    return out;
+  }
+  OVERWRITE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = OVERWRITE_RE.exec(text)) !== null) {
+    const lineStart = text.lastIndexOf('\n', m.index) + 1;
+    const before = text.slice(lineStart, m.index);
+    if (before.includes('#') || /\bdef\b/.test(before)) {
+      continue;
+    }
+    const call = parsePyCall(text, m.index);
+    if (!call) {
+      continue;
+    }
+    const pos = call.args.filter((a) => !a.name && !a.star);
+    const arg = (name: string, i: number) => call.args.find((a) => a.name === name) ?? pos[i];
+    const label = arg('event_key', 0) ? stringExprValue(text, arg('event_key', 0)!.value, call.start) : undefined;
+    const key = arg('pattern_key', 1) ? stringExprValue(text, arg('pattern_key', 1)!.value, call.start) : undefined;
+    const patArg = arg('pattern', 2);
+    if (!label || !key || !patArg) {
+      continue;
+    }
+    const pat = patArg.call;
+    if (!pat || pat.name !== 'Pattern') {
+      continue;
+    }
+    const pp = pat.args.filter((a) => !a.name && !a.star).map((a) => stringExprValue(text, a.value, pat.start));
+    if (pp.length < 2 || pp.slice(0, 2).some((v) => v === undefined)) {
+      continue;
+    }
+    const mod = /set_current_mod\(\s*['"]([^'"]+)['"]\s*\)/.exec(text.slice(0, m.index).split('\n').reverse().join('\n'))?.[1];
+    const a = offsetToPosition(text, pat.start);
+    const b = offsetToPosition(text, pat.close + 1);
+    out.push({
+      label,
+      pattern: {
+        // The engine stores it under pattern_key (the Pattern's own key is only a name).
+        patternKey: key,
+        pathTemplate: pp[1]!,
+        altKeys: pp.slice(2).filter((v): v is string => v !== undefined),
+        range: new vscode.Range(a.line, a.character, b.line, b.character),
+        override: { uri, mod },
+      },
+    });
   }
   return out;
 }

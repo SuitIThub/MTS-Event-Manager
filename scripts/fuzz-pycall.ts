@@ -9,8 +9,10 @@ import {
   removeArgEdit,
   replaceValueEdit,
 } from '../src/pyCall';
+import { GAME, SCRIPTS, WS_ROOT, requireGame } from './testEnv';
 
-const GAME = 'M:/MTS Project/Mind the School/game';
+requireGame('fuzz-pycall', 'scripts');
+
 function walk(d: string, o: string[] = []): string[] {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
     const p = path.join(d, e.name);

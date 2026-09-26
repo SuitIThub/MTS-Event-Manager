@@ -107,4 +107,11 @@ const workspace = {
   },
 };
 
-module.exports = { Position, Range, Uri, EventEmitter, workspace };
+class Location {
+  constructor(uri, range) {
+    this.uri = uri;
+    this.range = range;
+  }
+}
+
+module.exports = { Position, Range, Location, Uri, EventEmitter, workspace };
