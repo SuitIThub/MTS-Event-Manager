@@ -26,7 +26,7 @@ import { collectPortraitFiles, portraitRoots } from './portraitResolve';
 import { PortraitStore } from './portraitStore';
 import { PaperdollEditor } from './paperdollEditor';
 import { EventDefEditor } from './eventDefEditor';
-import { undoLast } from './editHistory';
+import { undoLastChange } from './historyOps';
 import { offsetToPosition, readStringLiteral } from './scan';
 import { chainBounds, isSayLine, locateLineIn, PAUSE_LINE_RE } from './lineTools';
 import { ImageCallSite, LabelDefinition } from './types';
@@ -269,19 +269,19 @@ async function onMessage(
     return;
   }
   if (msg.type === 'undo') {
-    const result = await undoLast();
+    const result = await undoLastChange();
     if (!result) {
       void vscode.window.showInformationMessage('Nothing to undo.');
-    } else if (result.status === 'already') {
-      void vscode.window.showInformationMessage(`"${result.label}" was already reverted.`);
     } else if (result.status === 'lost') {
-      void vscode.window.showWarningMessage(
-        `"${result.label}" can't be found anymore (the lines were edited since) — use the editor's undo (Ctrl+Z).`
-      );
+      void vscode.window.showWarningMessage(`"${result.label}": ${result.reason} Open the change history (🕘) to revert single blocks, or use the editor's undo (Ctrl+Z).`);
     } else {
       void vscode.window.showInformationMessage(`Reverted: ${result.label}`);
     }
     await publish(context, index, store);
+    return;
+  }
+  if (msg.type === 'openHistory') {
+    await vscode.commands.executeCommand('mtsEventManager.showHistory', session.uri);
     return;
   }
   if (msg.type === 'moveStatement') {
@@ -2549,6 +2549,7 @@ function html(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): stri
         <button class="alt" id="simbtn" title="When does this event fire? Simulate time, levels and stats against its conditions and its pool">🎯 Trigger</button>
         <button class="alt" id="overviewbtn" title="Overview of all events">🗂</button>
         <button class="alt" id="undo" title="Undo last timeline change">↩ Undo</button>
+        <button class="alt" id="historybtn" title="Change history: every code change made by the event manager as a diff — revert block by block">🕘 History</button>
       </div>
       <div class="values" id="values" style="display:none"></div>
       <div class="stage-frame"><div id="stage" class="stage"></div></div>

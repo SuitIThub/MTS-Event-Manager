@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { applyReversibleEdit, undoLast } from './editHistory';
+import { applyReversibleEdit, rollbackLast } from './editHistory';
 import { applyEdits, TextEdit } from './pyCall';
 import { checkStructure } from './codeStructure';
 
@@ -48,7 +48,7 @@ export async function applyVerifiedEdits(
   }
   const after = (await vscode.workspace.openTextDocument(uri)).getText();
   if (after !== expected) {
-    await undoLast();
+    await rollbackLast();
     return 'The edit did not come out as verified and was rolled back.';
   }
   return undefined;

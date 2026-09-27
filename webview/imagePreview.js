@@ -2,6 +2,8 @@
 
     const items = JSON.parse(document.getElementById('payload').textContent);
     const vscode = acquireVsCodeApi();
+    // A saved state marks the page as restorable (window reload, move to another window).
+    if (typeof vscode.setState === 'function' && !vscode.getState()) vscode.setState({ restorable: true });
     let i = 0;
     const img = document.getElementById('img');
     const counter = document.getElementById('counter');

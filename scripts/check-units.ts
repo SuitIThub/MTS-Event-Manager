@@ -1,4 +1,7 @@
 import * as fs from 'fs';
+import { computeHunks, hunkState, locateRegion } from '../src/editHistory';
+import { webviewBundle } from './webviewTestUtil';
+import { scanInlineAddedEvents } from '../src/workspaceFacts';
 import { isNewer, releaseFromJson } from '../src/updateCheck';
 import * as os from 'os';
 import * as path from 'path';
@@ -124,6 +127,15 @@ const check = (ok: boolean, m: string) => {
     `overwrite_event_image parsed as a mod pattern for its event (${JSON.stringify(ov.map((o) => [o.label, o.pattern.pathTemplate, o.pattern.override?.mod]))})`);
 }
 
+// ── Events added to a pool inline: pool.add_event(Event(…), EventFragment(…)) ──
+{
+  const src = ['init 1 python:', '    office_events["look"].add_event(', '        Event(3, "ev_a", TimeCondition(daytime = "f")),', '        EventSelect(2, "ev_b"),', '    )', '    storage.add_event(EventFragment(2, "frag_a"))', '    # other.add_event(Event(3, "commented"))', ''].join('\n');
+  const inline = scanInlineAddedEvents(src);
+  const look = inline.get('office_events["look"]') ?? [];
+  check(look.map((e) => e.label + ':' + e.kind).join() === 'ev_a:Event,ev_b:EventSelect' && inline.get('storage')?.[0]?.kind === 'EventFragment' && !inline.has('other'),
+    `inline add_event entries keep label and kind (${JSON.stringify([...inline])})`);
+}
+
 // ── Update check: version comparison and release parsing ──
 {
   check(isNewer('v0.7.0', '0.6.0') && isNewer('0.6.1', '0.6.0') && isNewer('1.0.0', '0.99.99') && isNewer('0.10.0', '0.9.9'), 'newer versions are recognised (numeric, not text order)');
@@ -132,6 +144,95 @@ const check = (ok: boolean, m: string) => {
   check(rel?.version === '0.7.0' && rel.url.endsWith('/releases/tag/v0.7.0'), 'release post link and version read from the GitHub response');
   check(!releaseFromJson({ tag_name: 'v0.8.0', html_url: 'https://github.com/x', prerelease: true }) && !releaseFromJson({ tag_name: 'v0.8.0', html_url: 'https://evil.example/x' }) && !releaseFromJson({ message: 'Not Found' }),
     'pre-releases, foreign links and error responses are ignored');
+}
+
+// ── Change history: blocks, reverting one block, finding blocks after other edits ──
+{
+  const before = ['label a:', '    e "one"', '    e "two"', '    e "three"', '    e "four"', '    e "five"', '    return', ''].join('\n');
+  // Two separate changes (line 2 edited, a line inserted after "four") + a deletion ("five").
+  const after = ['label a:', '    e "ONE"', '    e "two"', '    e "three"', '    e "four"', '    e "new"', '    return', ''].join('\n');
+  const hunks = computeHunks(before, after);
+  check(hunks.length === 2 && hunks[0].beforeSeg === '    e "one"\n' && hunks[0].afterSeg === '    e "ONE"\n' && hunks[1].beforeSeg === '    e "five"\n' && hunks[1].afterSeg === '    e "new"\n',
+    `a change splits into blocks of changed lines (${hunks.map((h) => JSON.stringify([h.beforeSeg, h.afterSeg])).join(' ')})`);
+  check(hunks[0].line === 1 && hunks[1].line === 5 && hunks[1].linesBefore.join('|') === '    e "three"|    e "four"', 'blocks know their line and context lines');
+  const revertOne = (cur: string, h: (typeof hunks)[number]) => {
+    const at = locateRegion(cur, h);
+    return at === undefined ? undefined : cur.slice(0, at) + h.beforeSeg + cur.slice(at + h.afterSeg.length);
+  };
+  // Revert only block 2, after an unrelated edit shifted everything by one line.
+  const drifted = '# note\n' + after;
+  const r2 = revertOne(drifted, hunks[1]);
+  check(r2 === '# note\n' + ['label a:', '    e "ONE"', '    e "two"', '    e "three"', '    e "four"', '    e "five"', '    return', ''].join('\n'), 'one block reverts on its own, also after the file shifted');
+  check(hunkState(r2!, hunks[1]) === 'reverted' && hunkState(r2!, hunks[0]) === 'applied', 'block states follow the text (reverted / applied)');
+  const r1 = revertOne(r2!, hunks[0]);
+  check(r1 === '# note\n' + before, 'reverting both blocks restores the original');
+  const edited = after.replace('    e "ONE"', '    e "ONE!!"');
+  check(hunkState(edited, hunks[0]) === 'changed' && locateRegion(edited, hunks[0]) === undefined, 'a block edited since is reported, not reverted blindly');
+  const ins = computeHunks('a\nb\n', 'a\nX\nb\n');
+  const del = computeHunks('a\nX\nb\n', 'a\nb\n');
+  check(ins.length === 1 && ins[0].beforeSeg === '' && ins[0].afterSeg === 'X\n' && del.length === 1 && del[0].beforeSeg === 'X\n' && del[0].afterSeg === '',
+    'pure insertions and deletions are blocks too');
+  check(revertOne('a\nX\nb\n', ins[0]) === 'a\nb\n' && revertOne('a\nb\n', del[0]) === 'a\nX\nb\n', 'insertions and deletions revert');
+  const crlfB = 'x\r\ny\r\nz\r\n';
+  const crlfA = 'x\r\nY\r\nz\r\n';
+  const ch = computeHunks(crlfB, crlfA);
+  check(ch.length === 1 && ch[0].beforeSeg === 'y\r\n' && ch[0].afterSeg === 'Y\r\n', 'CRLF files keep their line endings in blocks');
+}
+
+// ── Change history panel script: renders entries, posts revert / reveal ──
+{
+  type L = (e: any) => void;
+  class N {
+    children: N[] = []; className = ''; _t = ''; value = ''; title = ''; disabled = false; checked = false; style: Record<string, string> = {}; ls: Record<string, L[]> = {};
+    constructor(public tagName: string, public id = '') {}
+    set textContent(v: string) { this._t = String(v); this.children = []; }
+    get textContent(): string { return this._t + this.children.map((c) => c.textContent).join(''); }
+    set innerHTML(_v: string) { this.children = []; this._t = ''; }
+    appendChild(c: N) { this.children.push(c); return c; }
+    get lastChild() { return this.children[this.children.length - 1]; }
+    addEventListener(t: string, f: L) { (this.ls[t] ??= []).push(f); }
+    click() { (this.ls.click ?? []).forEach((f) => f({ stopPropagation() {} })); }
+    classList = { toggle: (c: string) => { this.className = this.className.includes(c) ? this.className.replace(' ' + c, '') : this.className + ' ' + c; } };
+    all(): N[] { return [this, ...this.children.flatMap((c) => c.all())]; }
+  }
+  const ids = new Map(['file', 'hideReverted', 'clear', 'count', 'list'].map((id) => [id, new N('div', id)]));
+  const posted: any[] = [];
+  const winLs: L[] = [];
+  const doc = { getElementById: (id: string) => ids.get(id), createElement: (tag: string) => new N(tag) };
+  const vsc = { postMessage: (m: any) => posted.push(m), getState: () => undefined, setState: () => undefined };
+  new Function('document', 'window', 'acquireVsCodeApi', webviewBundle('history'))(doc, { addEventListener: (t: string, f: L) => t === 'message' && winLs.push(f) }, () => vsc);
+  check(posted[0]?.type === 'ready', 'history page asks for its data');
+  const entry = { id: 7, label: 'Timeline: edit dialogue', time: Date.now(), file: 'game/x.rpy', uri: 'file:///x.rpy', hunks: [
+    { index: 0, line: 3, state: 'applied', removed: ['    e "a"'], added: ['    e "b"'], before: ['label x:'], after: [] },
+    { index: 1, line: 9, state: 'reverted', removed: [], added: ['    pass'], before: [], after: [] },
+  ] };
+  winLs.forEach((f) => f({ data: { type: 'history', entries: [entry, { ...entry, id: 8, label: 'Revert: x', revertOf: 7, hunks: [{ ...entry.hunks[0], state: 'changed' }] }] } }));
+  const list = ids.get('list')!;
+  const text = list.textContent;
+  check(text.includes('Timeline: edit dialogue') && text.includes('-     e "a"') && text.includes('+     e "b"') && text.includes('revert of #7') && text.includes('edited since'),
+    'history page shows labels, diff lines and block states');
+  const buttons = list.all().filter((n) => n.tagName === 'button');
+  const revertBlock = buttons.filter((b) => b._t === 'Revert block');
+  check(revertBlock.length === 2 && !revertBlock[0].disabled && revertBlock[1].disabled, 'only applied blocks can be reverted');
+  posted.length = 0;
+  revertBlock[0].click();
+  buttons.find((b) => b._t === 'Show in code')!.click();
+  buttons.find((b) => b._t === 'Revert change')!.click();
+  check(JSON.stringify(posted) === JSON.stringify([{ type: 'revert', id: 7, hunks: [0] }, { type: 'reveal', id: 7, hunk: 0 }, { type: 'revert', id: 7 }]),
+    `history buttons post revert block / reveal / revert change (${JSON.stringify(posted)})`);
+}
+
+// ── Every webview panel survives a move to another window (serializer + activation event) ──
+{
+  const srcDir = path.join(__dirname, '..', 'src');
+  const all = fs.readdirSync(srcDir).filter((f) => f.endsWith('.ts')).map((f) => fs.readFileSync(path.join(srcDir, f), 'utf8')).join('\n');
+  const consts = new Map([...all.matchAll(/const ([A-Z_]+) = '(mts[A-Za-z]+)'/g)].map((m) => [m[1], m[2]]));
+  const resolve = (arg: string) => (arg.startsWith("'") ? arg.slice(1, -1) : consts.get(arg) ?? arg);
+  const created = new Set([...all.matchAll(/createWebviewPanel\(\s*([A-Z_]+|'[^']+')/g)].map((m) => resolve(m[1])));
+  const restored = new Set([...all.matchAll(/registerWebviewPanelSerializer\(\s*([A-Z_]+|'[^']+')/g)].map((m) => resolve(m[1])));
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const missing = [...created].filter((v) => !restored.has(v) || !pkg.activationEvents.includes('onWebviewPanel:' + v));
+  check(created.size >= 6 && missing.length === 0, `every panel has a serializer and an activation event (${[...created].join(', ')}${missing.length ? '; missing: ' + missing.join(', ') : ''})`);
 }
 
 // ── Overview webview renders ──

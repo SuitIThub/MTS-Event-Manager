@@ -68,6 +68,7 @@ To update, install the newer VSIX over the old one. The extension tells you when
 | Area | What you get |
 |---|---|
 | **Event editor (timeline)** | Plays an event stop by stop: dialogue with portraits, CGs, backgrounds, paperdolls (animated), videos. Pick branches and selector values; the timeline follows. |
+| **Change history** | Every code change the manager made, as a diff per block. Revert single blocks or whole changes, jump to them in the code. |
 | **In-place editing** | Dialogue text, speaker and type, `random_say` alternatives, monologue parts, stat changes, `end_event` type, menu choices. Insert dialogue/image/video/paperdoll/menu with **＋**, move statements, delete lines, *Optimize* image calls. |
 | **Modules** | Image (steps, pause, video with `Movie` declarations, PNG/WEBP switch), background (`set_background`: blur, split, b/w), paperdoll editor, `Event(...)` definition editor, new event wizard. |
 | **Check** | Walks every path of the event and reports missing images per value combination, missing `Movie` declarations, broken menu targets, endings and unknown speakers — plus a **shot list** of images to make. |
@@ -117,7 +118,7 @@ after a window reload.
   - **↪ Code** reveals the current line in the code editor.
   - **Definition** opens the `Event(...)` editor; **New event** creates a new event.
   - **✨ Optimize**, **Check**, **Simulate** and **Overview** are described below.
-  - **↩ Undo** reverts the last timeline change.
+  - **↩ Undo** reverts the last timeline change; **🕘 History** opens the change history.
 - **Values bar:** the event's selector keys (e.g. `school_level`, `topic`, `girl_name`). Choose a value to see
   the images and text for it; `[topic]`-style interpolations follow.
 - **Branch bar:** every `call_custom_menu(...)` choice and `if`/`elif` on the current path. Pick one and the
@@ -152,6 +153,19 @@ Every edit follows the same pipeline:
 
 If anything differs, nothing is written and a message explains why. If you changed the file in the code editor
 meanwhile, the line is re-located first.
+
+### Change history
+
+**MTS: Change History** (or **🕘 History** in the event editor) lists every code change made by the event manager
+(timeline, modules, paperdoll and definition editors), newest first. It is kept per workspace, also across restarts.
+
+- Each change is split into **blocks** of changed lines and shown as a diff (`-` old, `+` new, with context lines).
+- **Revert block** undoes one block, **Revert change** all blocks of that change that are still in the code. A revert
+  is a verified edit like any other, is recorded as well and can itself be reverted.
+- Blocks are found again after other edits in the file. If the lines were edited since, the block shows *edited
+  since* and is not reverted blindly. Reverting with Ctrl+Z in the editor is recognised (*reverted*).
+- **Show in code** selects the block in the editor; the file filter narrows the list; **Clear history** forgets the
+  records (the code is not touched).
 
 ### Modules
 

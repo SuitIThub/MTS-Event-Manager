@@ -1,4 +1,9 @@
 import * as vscode from 'vscode';
+import { registerPaperdollSerializer } from './paperdollPanel';
+import { registerImagePreviewSerializer } from './imagePreview';
+import { registerPortraitSerializer } from './portraitPanel';
+import { initHistory } from './editHistory';
+import { registerHistorySerializer, showHistoryPanel } from './historyPanel';
 import { registerUpdateCheck } from './updateCheck';
 import { initWebviewAssets } from './webviewAssets';
 import { CaptureBridge } from './captureBridge';
@@ -20,6 +25,13 @@ const RPY_SELECTOR: vscode.DocumentSelector = [
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   initWebviewAssets(context.extensionUri);
+  // The change history must be loaded before the first edit is recorded.
+  initHistory(context);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mtsEventManager.showHistory', (uri?: vscode.Uri | string) =>
+      showHistoryPanel(context, typeof uri === 'string' ? vscode.Uri.parse(uri) : uri ?? vscode.window.activeTextEditor?.document.uri)
+    )
+  );
   registerUpdateCheck(context);
   const index = new WorkspaceIndex();
   const diagnostics = new EventDiagnostics(index);
@@ -35,7 +47,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   registerCommands(context, index, portraits);
   // Reopen the event preview / overview after a window reload, in their last state.
-  context.subscriptions.push(registerPreviewSerializer(context, index, portraits), registerOverviewSerializer(context, index, portraits));
+  context.subscriptions.push(
+    registerPreviewSerializer(context, index, portraits),
+    registerOverviewSerializer(context, index, portraits),
+    registerHistorySerializer(context),
+    registerPaperdollSerializer(context, index),
+    registerImagePreviewSerializer(context),
+    registerPortraitSerializer(context, index, portraits)
+  );
 
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(RPY_SELECTOR, codeLens),

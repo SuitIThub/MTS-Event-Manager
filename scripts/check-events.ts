@@ -58,6 +58,9 @@ async function main() {
   check(index.isGlobalCharacter('headmaster') && index.isGlobalCharacter('subtitles') === index.isGlobalCharacter('subtitles'), 'define character.headmaster is a global speaker');
   const pools = index.getPoolsOfLabel('sd_event_5');
   check(pools.length === 1 && index.getPoolLabels(pools[0]).includes('sd_event_2'), `sd_event_5 pool: ${pools.join(', ')} → ${index.getPoolLabels(pools[0] ?? '').join(', ')}`);
+  const labPools = index.getPoolsOfLabel('lab_intro_10');
+  check(labPools.includes('office_building_events["look_around"]'), `an Event(…) written inside pool.add_event(…) is in that pool (${labPools.join(', ')})`);
+  check(index.getPoolsOfLabel('truth_or_dare_truth_1').length === 0, 'inline EventFragment(…) in a fragment storage is not a pool entry');
 
   // ── Event check: clean events stay clean ──
   const sd5 = await runEventCheck(index, dorm.uri, dorm.text, dorm.labels, at(dorm, 'sd_event_5'));

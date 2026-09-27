@@ -7,6 +7,27 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.2] - 2026-09-27
+
+### Added
+- **Change history** (`MTS: Change History`, or **🕘 History** in the event editor): every code
+  change made by the event manager, newest first, as a diff per block. Revert a single block or a
+  whole change, jump to it in the code, filter by file. Block states follow the file (reverted,
+  edited since); reverts are recorded too and can be reverted again. The history is kept per
+  workspace across restarts.
+
+### Changed
+- **↩ Undo** in the event editor now goes through the change history: it reverts the newest change
+  that is still in the code, verified like any other edit.
+
+### Fixed
+- The paperdoll editor, the image preview carousel and the custom portraits panel keep working
+  when moved into another window (they were left empty and unresponsive); a test now requires
+  every panel to be restorable.
+- Events written directly inside `pool.add_event(Event(...), ...)` were treated as "not added to a
+  pool" (116 events in the game, e.g. all office events). The simulator's pool competition and the
+  overview's pool groups now include them.
+
 ## [0.6.1] - 2026-09-26
 
 ### Added

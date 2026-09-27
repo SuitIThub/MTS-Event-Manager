@@ -51,12 +51,35 @@ export async function showPaperdollEditor(
   }
 
   const roots = [...(await getImageRoots()).map((r) => vscode.Uri.file(r)), ...webviewAssetRoots()];
-  panel = vscode.window.createWebviewPanel('mtsPaperdoll', 'MTS Paperdoll', { viewColumn: lastColumn(context, 'paperdoll', vscode.ViewColumn.Beside), preserveFocus: false }, {
+  const created = vscode.window.createWebviewPanel('mtsPaperdoll', 'MTS Paperdoll', { viewColumn: lastColumn(context, 'paperdoll', vscode.ViewColumn.Beside), preserveFocus: false }, {
     enableScripts: true,
     retainContextWhenHidden: true,
     localResourceRoots: roots,
   });
-  const created = panel;
+  adoptPaperdoll(context, index, created);
+  await editor.publish(created.webview, index);
+}
+
+/**
+ * Moving the panel into another window rebuilds the webview; VS Code hands it back here.
+ * The editor's session lives on in the extension, so the page simply asks for it again.
+ * After a full reload there is no session any more — the stale panel is closed.
+ */
+export function registerPaperdollSerializer(context: vscode.ExtensionContext, index: WorkspaceIndex): vscode.Disposable {
+  return vscode.window.registerWebviewPanelSerializer('mtsPaperdoll', {
+    async deserializeWebviewPanel(restored: vscode.WebviewPanel) {
+      if (!editor || (panel && panel !== restored)) {
+        restored.dispose();
+        return;
+      }
+      restored.webview.options = { enableScripts: true, localResourceRoots: [...(await getImageRoots()).map((r) => vscode.Uri.file(r)), ...webviewAssetRoots()] };
+      adoptPaperdoll(context, index, restored);
+    },
+  });
+}
+
+function adoptPaperdoll(context: vscode.ExtensionContext, index: WorkspaceIndex, created: vscode.WebviewPanel): void {
+  panel = created;
   trackColumn(context, 'paperdoll', created);
   context.subscriptions.push(created);
   created.onDidDispose(() => {
@@ -77,7 +100,6 @@ export async function showPaperdollEditor(
     }
   });
   created.webview.html = html(created.webview);
-  await editor.publish(created.webview, index);
 }
 
 function html(webview: vscode.Webview): string {

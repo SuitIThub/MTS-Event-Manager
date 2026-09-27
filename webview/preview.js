@@ -1048,6 +1048,7 @@ document.getElementById('next').addEventListener('click', () => goto(current+1, 
 document.getElementById('last').addEventListener('click', () => goto((state.stops||[]).length-1));
 document.getElementById('reveal').addEventListener('click', () => { const s=(state.stops||[])[current]; if (s) vscode.postMessage({ type:'reveal', line:s.line }); });
 document.getElementById('undo').addEventListener('click', () => vscode.postMessage({ type:'undo' }));
+document.getElementById('historybtn').addEventListener('click', () => vscode.postMessage({ type:'openHistory' }));
 document.getElementById('checkbtn').addEventListener('click', openCheck);
 document.getElementById('checkclose').addEventListener('click', () => showModule(null));
 document.getElementById('simbtn').addEventListener('click', openSim);

@@ -429,8 +429,15 @@ export class WorkspaceIndex {
           added.set(pool, [...new Set([...(added.get(pool) ?? []), ...labels])]);
         }
       }
-      for (const [recv, labels] of scanInlineAddedEvents(text)) {
+      for (const [recv, inline] of scanInlineAddedEvents(text)) {
+        const labels = inline.map((e) => e.label);
         added.set(recv, [...new Set([...(added.get(recv) ?? []), ...labels])]);
+        // `pool.add_event(Event(3, "label", …))` written inline is a pool entry too — fragments
+        // (EventFragment) go into fragment storages, not pools.
+        const pooled = inline.filter((e) => e.kind !== 'EventFragment').map((e) => e.label);
+        if (pooled.length) {
+          pools.set(recv, [...new Set([...(pools.get(recv) ?? []), ...pooled])]);
+        }
       }
     }
     // Fragments inherit from their composite (engine: frag_image_patterns first, then the

@@ -17,8 +17,8 @@ const ADD_EVENT_RE = /\.\s*add_event\s*\(/g;
  * `storage.add_event(a, EventFragment(2, "label", …), …)` → receiver → event labels written
  * inline (the variables are resolved by the caller, see scanPools).
  */
-export function scanInlineAddedEvents(text: string): Map<string, string[]> {
-  const out = new Map<string, string[]>();
+export function scanInlineAddedEvents(text: string): Map<string, { label: string; kind: string }[]> {
+  const out = new Map<string, { label: string; kind: string }[]>();
   ADD_EVENT_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = ADD_EVENT_RE.exec(text)) !== null) {
@@ -31,13 +31,13 @@ export function scanInlineAddedEvents(text: string): Map<string, string[]> {
     if (!call) {
       continue;
     }
-    const labels: string[] = [];
+    const labels: { label: string; kind: string }[] = [];
     for (const a of call.args) {
       const inner = !a.name && !a.star && /^Event[A-Za-z]*\s*\(/.test(a.value.trim()) ? parsePyCall(a.value.trim(), 0) : undefined;
       const label = inner?.args.filter((x) => !x.name && !x.star)[1];
       const d = label ? decodeValue(label.value) : undefined;
       if (d?.kind === 'string' && d.value) {
-        labels.push(d.value);
+        labels.push({ label: d.value, kind: inner!.name });
       }
     }
     if (labels.length) {

@@ -20,7 +20,7 @@ export function showPortraitPanel(
     return;
   }
 
-  panel = vscode.window.createWebviewPanel(
+  adoptPortraits(context, index, store, vscode.window.createWebviewPanel(
     'mtsCustomPortraits',
     'MTS Portraits',
     vscode.ViewColumn.Beside,
@@ -29,7 +29,25 @@ export function showPortraitPanel(
       retainContextWhenHidden: true,
       localResourceRoots: webviewAssetRoots(),
     }
-  );
+  ));
+}
+
+/** Moving the panel into another window (or a reload) rebuilds the webview — refill it. */
+export function registerPortraitSerializer(context: vscode.ExtensionContext, index: WorkspaceIndex, store: PortraitStore): vscode.Disposable {
+  return vscode.window.registerWebviewPanelSerializer('mtsCustomPortraits', {
+    async deserializeWebviewPanel(restored: vscode.WebviewPanel) {
+      if (panel && panel !== restored) {
+        restored.dispose();
+        return;
+      }
+      restored.webview.options = { enableScripts: true, localResourceRoots: webviewAssetRoots() };
+      adoptPortraits(context, index, store, restored);
+    },
+  });
+}
+
+function adoptPortraits(context: vscode.ExtensionContext, index: WorkspaceIndex, store: PortraitStore, created: vscode.WebviewPanel): void {
+  panel = created;
   const idxSub = index.onDidChange(() => {
     if (panel) {
       void refresh(panel, context, index, store);

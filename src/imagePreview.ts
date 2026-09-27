@@ -5,6 +5,8 @@ import { formatPatternParams } from './patternResolve';
 import { ResolvedImageInfo } from './types';
 
 let panel: vscode.WebviewPanel | undefined;
+/** What the carousel shows — kept so a rebuilt webview (moved to another window) can be refilled. */
+let lastShown: { title: string; images: ResolvedImageInfo[] } | undefined;
 
 export function showImagePreviewCarousel(
   title: string,
@@ -23,7 +25,8 @@ export function showImagePreviewCarousel(
     panel = undefined;
   }
 
-  panel = vscode.window.createWebviewPanel(
+  lastShown = { title, images };
+  adoptCarousel(context, vscode.window.createWebviewPanel(
     'mtsImagePreview',
     title,
     vscode.ViewColumn.Beside,
@@ -32,9 +35,33 @@ export function showImagePreviewCarousel(
       retainContextWhenHidden: true,
       localResourceRoots: [...roots, ...webviewAssetRoots()],
     }
-  );
+  ));
+}
+
+/** Moving the carousel into another window rebuilds its webview — refill it from memory. */
+export function registerImagePreviewSerializer(context: vscode.ExtensionContext): vscode.Disposable {
+  return vscode.window.registerWebviewPanelSerializer('mtsImagePreview', {
+    async deserializeWebviewPanel(restored: vscode.WebviewPanel) {
+      if (!lastShown || (panel && panel !== restored)) {
+        restored.dispose();
+        return;
+      }
+      restored.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [...rootsForImages(lastShown.images.map((i) => i.uri)), ...webviewAssetRoots()],
+      };
+      adoptCarousel(context, restored);
+    },
+  });
+}
+
+function adoptCarousel(context: vscode.ExtensionContext, created: vscode.WebviewPanel): void {
+  panel = created;
+  const { title, images } = lastShown!;
   panel.onDidDispose(() => {
-    panel = undefined;
+    if (panel === created) {
+      panel = undefined;
+    }
   });
   panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg?.type === 'open' && typeof msg.path === 'string') {
