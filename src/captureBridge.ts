@@ -50,14 +50,40 @@ export interface BridgeData {
   truncated?: boolean;
 }
 
-export function defaultBridgeFile(): string {
-  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(base, 'MTS-Event-Manager', 'capture', 'active-event.json');
+/**
+ * Default bridge file. Windows: %LOCALAPPDATA%\MTS-Event-Manager\capture\active-event.json.
+ * Linux / macOS (studio under Wine/Proton): $XDG_DATA_HOME or ~/.local/share/… — the plugin
+ * looks there by default too (through Wine's Z: drive).
+ */
+export function defaultBridgeFile(platform: string = process.platform, env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const base = platform === 'win32'
+    ? env.LOCALAPPDATA || p.join(home, 'AppData', 'Local')
+    : env.XDG_DATA_HOME && env.XDG_DATA_HOME.startsWith('/') ? env.XDG_DATA_HOME : p.join(home, '.local', 'share');
+  return p.join(base, 'MTS-Event-Manager', 'capture', 'active-event.json');
+}
+
+/**
+ * The configured path, made usable on this OS: `~` expands; on Linux/macOS a Wine path
+ * (`Z:\home\me\…`, as copied from the plugin's settings) becomes `/home/me/…`.
+ */
+export function localBridgePath(configured: string, platform: string = process.platform, home: string = os.homedir()): string {
+  let p = configured.trim();
+  if (platform !== 'win32') {
+    const wine = /^[A-Za-z]:[\\/](.*)$/.exec(p);
+    if (wine) {
+      p = '/' + wine[1].replace(/\\/g, '/');
+    }
+  }
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) {
+    p = path.join(home, p.slice(1));
+  }
+  return p;
 }
 
 export function bridgeFile(): string {
   const configured = vscode.workspace.getConfiguration('mtsEventManager').get<string>('capture.bridgeFile', '').trim();
-  return configured || defaultBridgeFile();
+  return configured ? localBridgePath(configured) : defaultBridgeFile();
 }
 
 export function captureEnabled(): boolean {
@@ -207,11 +233,31 @@ export function buildTargets(
   return { targets, keys, keyValues: kv, truncated };
 }
 
-async function writeAtomic(file: string, data: BridgeData): Promise<void> {
+/**
+ * Write via a temp file + rename. On Windows the rename fails while another process (the
+ * studio plugin) has the bridge open — retry briefly, then write in place, so the file is
+ * never left stale.
+ */
+export async function writeAtomic(file: string, data: BridgeData): Promise<void> {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const json = JSON.stringify(data, null, 1);
   const tmp = `${file}.${process.pid}.tmp`;
-  await fs.promises.writeFile(tmp, JSON.stringify(data, null, 1), 'utf8');
-  await fs.promises.rename(tmp, file);
+  await fs.promises.writeFile(tmp, json, 'utf8');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.promises.rename(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if ((code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') && attempt < 5) {
+        await new Promise((r) => setTimeout(r, 60 * (attempt + 1)));
+        continue;
+      }
+      await fs.promises.unlink(tmp).catch(() => undefined);
+      await fs.promises.writeFile(file, json, 'utf8');
+      return;
+    }
+  }
 }
 
 interface ActiveEvent {
@@ -222,6 +268,23 @@ interface ActiveEvent {
 }
 
 let instance: CaptureBridge | undefined;
+
+/** "MTS: Refresh Capture Bridge" and the event editor's button. */
+export async function refreshCaptureBridge(): Promise<void> {
+  if (!instance) {
+    return;
+  }
+  if (!captureEnabled()) {
+    void vscode.window.showWarningMessage('The capture bridge is off (mtsEventManager.capture.enabled).');
+    return;
+  }
+  const error = await instance.refresh();
+  if (error) {
+    void vscode.window.showWarningMessage(`Capture bridge could not be written: ${error}`);
+  } else {
+    void vscode.window.showInformationMessage(`Capture bridge refreshed: ${bridgeFile()}`);
+  }
+}
 
 /** Called by the event editor whenever it shows an event (undefined: nothing shown). */
 export function notifyActiveEvent(active: ActiveEvent | undefined): void {
@@ -237,6 +300,9 @@ export class CaptureBridge implements vscode.Disposable {
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> = Promise.resolve();
   private lastKey = '';
+  /** Why the last write failed (shown by the refresh command), undefined after a good write. */
+  private lastError: string | undefined;
+  private readonly output = vscode.window.createOutputChannel('MTS Capture Bridge');
   private readonly subs: vscode.Disposable[] = [];
 
   constructor(private readonly index: WorkspaceIndex) {
@@ -273,8 +339,35 @@ export class CaptureBridge implements vscode.Disposable {
     }
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      this.running = this.running.then(() => this.write()).catch((e) => console.error('[MTS capture bridge]', e));
+      this.running = this.running.then(() => this.writeLogged());
     }, force ? 400 : 250);
+  }
+
+  private async writeLogged(): Promise<void> {
+    try {
+      await this.write();
+      this.lastError = undefined;
+    } catch (e) {
+      this.lastError = e instanceof Error ? e.message : String(e);
+      this.output.appendLine(`[${new Date().toLocaleTimeString()}] write failed: ${this.lastError}`);
+    }
+  }
+
+  /**
+   * Force a fresh bridge file: the old one is deleted and the open event written again right
+   * away (no debounce). Returns an error text, or undefined when written.
+   */
+  async refresh(): Promise<string | undefined> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    await this.running;
+    const file = bridgeFile();
+    await fs.promises.unlink(file).catch(() => undefined);
+    this.running = this.writeLogged();
+    await this.running;
+    return this.lastError;
   }
 
   private async write(): Promise<void> {
@@ -293,7 +386,7 @@ export class CaptureBridge implements vscode.Disposable {
     const roots = await getImageRoots();
     const root = rootFor(roots, defs[0]?.uri.fsPath ?? doc.uri.fsPath);
     if (!root) {
-      return;
+      throw new Error('No game image folder found for this event (open the game folder, or set mtsEventManager.imageRoots).');
     }
     const built = buildTargets(result.coverage, root, roots);
     await writeAtomic(file, {
@@ -310,6 +403,7 @@ export class CaptureBridge implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.output.dispose();
     if (instance === this) {
       instance = undefined;
     }

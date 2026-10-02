@@ -38,10 +38,13 @@ refused.
 Grab both files from the **[latest release](https://github.com/SuitIThub/MTS-Event-Manager/releases/latest)**.
 The release notes list what changed.
 
-### Extension (`mts-event-manager-<version>.vsix`)
+### Extension (`mts-event-manager-<version>-<platform>.vsix`)
 
-1. **Requirements:** VS Code 1.85 or newer, on Windows x64. The package bundles native image libraries for
-   Windows; on other platforms, [build it from source](#building-from-source).
+1. **Requirements:** VS Code 1.85 or newer. Pick the file for your system — the packages bundle native image
+   libraries per platform:
+   - Windows x64: `mts-event-manager-<version>-win32-x64.vsix`
+   - Linux x64: `mts-event-manager-<version>-linux-x64.vsix` (glibc and musl)
+   - other platforms (e.g. macOS): [build it from source](#building-from-source).
 2. In VS Code open **Extensions**, then the **…** menu, then **Install from VSIX…**, and choose the file.
 3. Open the folder that contains the game's `game/` directory (your Mind the School checkout), or your mod
    folder. A mod folder should sit inside a game checkout if you want the base game's classes and characters to
@@ -51,13 +54,27 @@ The release notes list what changed.
 To update, install the newer VSIX over the old one. The extension tells you when a new release is out
 (once a day, or on demand with **MTS: Check for Updates**).
 
-### Plugin (`MTSCapture-<version>.zip`)
+### Plugin (`MTSCapture.dll`)
 
 1. **Requirements:** Honey Select 2 with **BepInEx 5** and **KKAPI (HS2API) 1.46 or newer**. Any
    BetterRepack-style install has both.
-2. Extract the zip into the game folder, the one with `HoneySelect2.exe`. The DLL ends up in
-   `BepInEx\plugins\MTSCapture\`.
+2. Copy `MTSCapture.dll` into `BepInEx\plugins\` of the game folder (the one with `HoneySelect2.exe`), or into a
+   subfolder such as `BepInEx\plugins\MTSCapture\`. To update, replace the file.
 3. Start **StudioNEOV2**. A camera button appears in the left toolbar.
+
+### Linux / macOS (studio under Wine or Proton)
+
+VS Code runs natively, the studio under Wine/Proton. Both sides handle that on their own:
+
+- **Bridge file:** both default to `~/.local/share/MTS-Event-Manager/capture/active-event.json`
+  (or `$XDG_DATA_HOME/…`). The plugin reaches it through Wine's drive for the Unix root (`Z:`), so nothing has to
+  be configured.
+- **Paths:** the extension writes Unix paths (`/home/me/…/game/images/…`). The plugin maps them onto that drive
+  (`Z:\home\me\…`) before checking and writing. The drive is detected (*Unix drive (Wine)* = `auto`); set it
+  explicitly (e.g. `Z:`) if your prefix maps `/` elsewhere, or `off` to disable.
+- **Custom bridge path:** `mtsEventManager.capture.bridgeFile` accepts `~/…` and also a Wine path copied from the
+  plugin settings (`Z:\home\me\bridge.json`). In the plugin, a Unix path (`/home/me/bridge.json`) can be entered
+  as is.
 
 ---
 
@@ -178,6 +195,9 @@ meanwhile, the line is re-located first.
 - **Background:** `set_background` / `set_background_split` with image step or path, blur (on/amount,
   duration), black-and-white per side and the separator width.
 - **Paperdoll:** framing, presets (including `register_preset` ones from the game or mods), images per field.
+  **▦** next to *Pose* shows every pose as a thumbnail (with the current outfit, level, mood …) — click one to take it.
+  In the module's header, **◀ / ▶** step through the stops while the module follows to the call that shapes the doll
+  there, and **👥** switches between the characters on stage at the current stop.
   It updates the call or inserts a new `display`.
 - **Definition:** a form over the `Event(...)` call for conditions, selectors, patterns and options. Values are
   offered from what the game uses.
@@ -348,6 +368,8 @@ The extension reads the game's own conventions. As a mod author, these are the t
   pattern's path. The check's shot list shows the exact file name it expects.
 - **An edit was refused:** the message says why, e.g. the line changed, the result would change other code,
   or a string or block would break. Reopen the stop or edit that spot in the code.
+- **The plugin shows an old event or no event:** run **MTS: Refresh Capture Bridge** (or **📷 Bridge** in the event
+  editor). It rewrites the bridge file right away; write errors are listed in the *MTS Capture Bridge* output channel.
 - **The plugin window says "No bridge file yet":** open an event in the VS Code event editor and check that
   `mtsEventManager.capture.enabled` is on and both sides use the same bridge path.
 - **The game still shows the old image after assigning:** the pattern loads `.webp` first. Keep *Move older
@@ -410,8 +432,9 @@ The **Build & Release** workflow then:
 - type-checks, builds and tests the extension, including the fuzzers against the public Mind the School
   scripts;
 - builds and tests the plugin;
-- if `v<version>` has no GitHub release yet, packages `mts-event-manager-<version>.vsix` and
-  `MTSCapture-<version>.zip` and publishes the release.
+- builds a Linux VSIX on a Linux runner (npm installs the Linux image binaries there);
+- if `v<version>` has no GitHub release yet, publishes the release with
+  `mts-event-manager-<version>-win32-x64.vsix`, `mts-event-manager-<version>-linux-x64.vsix` and `MTSCapture.dll`.
 
 The release notes are the changelog sections of the whole minor line: a release of 0.6.1 shows 0.6.1 and 0.6.0.
 Versions of an older line that were never released are added too. Pull requests get the checks without a release. The workflow can

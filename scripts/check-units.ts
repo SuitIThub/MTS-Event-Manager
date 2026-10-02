@@ -1,4 +1,9 @@
 import * as fs from 'fs';
+import { defaultBridgeFile, localBridgePath, writeAtomic } from '../src/captureBridge';
+import { alignCrlfEdits } from '../src/codeStructure';
+import { planMoveStatement } from '../src/sceneOps';
+import { applyEdits } from '../src/pyCall';
+import { applyInEditor, applyPlanned } from './editorSim';
 import { computeHunks, hunkState, locateRegion } from '../src/editHistory';
 import { webviewBundle } from './webviewTestUtil';
 import { scanInlineAddedEvents } from '../src/workspaceFacts';
@@ -235,11 +240,44 @@ const check = (ok: boolean, m: string) => {
   check(created.size >= 6 && missing.length === 0, `every panel has a serializer and an activation event (${[...created].join(', ')}${missing.length ? '; missing: ' + missing.join(', ') : ''})`);
 }
 
+// ── CRLF files: edit boundaries the editor can address ──
+{
+  const crlf = ['label x:', '    e "one"', '    $ image.show(1)', '    e "two"', '    return', ''].join('\r\n');
+  const mv = planMoveStatement(crlf, 2, 1);
+  const planned = 'error' in mv ? '' : applyPlanned(crlf, mv.edits);
+  check(!('error' in mv) && planned.includes('    e "two"\r\n    $ image.show(1)\r\n') && !planned.includes('\r\r'), 'moving a statement in a CRLF file is planned correctly');
+  check(!('error' in mv) && applyInEditor(crlf, mv.edits, false) !== planned, 'without alignment the editor would split CRLF and get it wrong (the reported rollback)');
+  check(!('error' in mv) && applyInEditor(crlf, mv.edits) === planned, 'aligned boundaries give exactly the planned text in the editor');
+  const a = alignCrlfEdits('ab\r\ncd', [{ start: 3, end: 3, text: 'X' }, { start: 0, end: 3, text: 'Y\r' }]);
+  check(a.every((e) => !(e.start > 0 && 'ab\r\ncd'[e.start - 1] === '\r' && 'ab\r\ncd'[e.start] === '\n')) && applyEdits('ab\r\ncd', [a[1]]) === applyEdits('ab\r\ncd', [{ start: 0, end: 3, text: 'Y\r' }]),
+    'alignCrlfEdits moves boundaries out of CRLF without changing the result');
+}
+
+// ── Capture bridge file is always rewritten ──
+const bridgeCheck = (async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mts-bridge-'));
+  const file = path.join(dir, 'sub', 'active-event.json');
+  const data = (event: string) => ({ version: 1, written: '', event, keys: [], keyValues: {}, allowedRoots: [], targets: [] });
+  await writeAtomic(file, data('a'));
+  await writeAtomic(file, data('b'));
+  const ok = JSON.parse(fs.readFileSync(file, 'utf8')).event === 'b' && fs.readdirSync(path.dirname(file)).length === 1;
+  check(ok, 'bridge file: written, replaced, no temp file left');
+  check(defaultBridgeFile('linux', {}, '/home/me') === '/home/me/.local/share/MTS-Event-Manager/capture/active-event.json' &&
+    defaultBridgeFile('linux', { XDG_DATA_HOME: '/data/me' }, '/home/me') === '/data/me/MTS-Event-Manager/capture/active-event.json' &&
+    defaultBridgeFile('win32', { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' }, 'C:\\Users\\me') === 'C:\\Users\\me\\AppData\\Local\\MTS-Event-Manager\\capture\\active-event.json',
+    'bridge default: LOCALAPPDATA on Windows, XDG / ~/.local/share on Linux and macOS (= the plugin under Wine)');
+  check(localBridgePath('Z:\\home\\me\\bridge.json', 'linux', '/home/me') === '/home/me/bridge.json' && localBridgePath('Z:\\home\\me\\bridge.json', 'win32') === 'Z:\\home\\me\\bridge.json',
+    'a Wine path from the plugin settings works in the extension on Linux');
+  fs.rmSync(dir, { recursive: true, force: true });
+})();
+
 // ── Overview webview renders ──
 {
   const html = renderOverviewHtml(fakeWebview);
   check(html.includes('<html') || html.includes('<!DOCTYPE'), 'overview page renders');
 }
 
-console.log(`unit problems: ${problems}`);
-process.exitCode = problems ? 1 : 0;
+void bridgeCheck.then(() => {
+  console.log(`unit problems: ${problems}`);
+  process.exitCode = problems ? 1 : 0;
+});

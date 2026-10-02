@@ -35,6 +35,8 @@ namespace MTSCapture
 
         internal ConfigEntry<string> CaptureFolderSetting;
         internal ConfigEntry<string> BridgeFileSetting;
+        internal ConfigEntry<string> UnixDriveSetting;
+        private PathMap pathMap;
         internal ConfigEntry<int> TargetWidth;
         internal ConfigEntry<int> TargetHeight;
         internal ConfigEntry<OriginalHandling> Original;
@@ -87,7 +89,12 @@ namespace MTSCapture
             CaptureFolderSetting = Config.Bind(general, "Screenshot folder", "",
                 new ConfigDescription("Folder watched for new screenshots. Empty: the screenshot folder of the game's Screencap plugin (default UserData\\cap)."));
             BridgeFileSetting = Config.Bind(general, "Bridge file", "",
-                new ConfigDescription("JSON file written by the VS Code MTS Event Manager. Empty: %LOCALAPPDATA%\\MTS-Event-Manager\\capture\\active-event.json."));
+                new ConfigDescription("JSON file written by the VS Code MTS Event Manager. Empty: %LOCALAPPDATA%\\MTS-Event-Manager\\capture\\active-event.json " +
+                    "(under Wine/Proton: ~/.local/share/MTS-Event-Manager/capture/active-event.json, the extension's Linux/macOS default). A Unix path (/home/…) may be entered as is."));
+            UnixDriveSetting = Config.Bind(general, "Unix drive (Wine)", "auto",
+                new ConfigDescription("Wine/Proton only: the drive Wine maps the Unix root \"/\" to, used to translate the Unix paths written by VS Code on Linux/macOS. " +
+                    "auto = detect (usually Z:), off = no translation, or a drive like Z:."));
+            UnixDriveSetting.SettingChanged += (s, e) => { pathMap = null; bridgeMtime = default(DateTime); };
             TargetWidth = Config.Bind(general, "Expected width", 1920, new ConfigDescription("Captures of another size show a warning.", new AcceptableValueRange<int>(1, 16384)));
             TargetHeight = Config.Bind(general, "Expected height", 1080, new ConfigDescription("Captures of another size show a warning.", new AcceptableValueRange<int>(1, 16384)));
             Original = Config.Bind(general, "Screenshot after assigning", OriginalHandling.MoveToAssigned,
@@ -152,12 +159,40 @@ namespace MTSCapture
 
         // ── Paths ──
 
+        /// <summary>Unix ↔ Wine path translation (inactive on plain Windows).</summary>
+        internal PathMap Paths2
+        {
+            get
+            {
+                if (pathMap == null) pathMap = PathMap.Detect(UnixDriveSetting.Value, Directory.Exists, UnderWine());
+                return pathMap;
+            }
+        }
+
+        /// <summary>Wine announces itself in the registry (HKCU\Software\Wine) and exports wine_get_version.</summary>
+        private static bool UnderWine()
+        {
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Wine")) if (key != null) return true;
+            }
+            catch { }
+            return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINEPREFIX")) || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINELOADER"));
+        }
+
         internal string BridgePath
         {
             get
             {
                 var configured = (BridgeFileSetting.Value ?? "").Trim();
-                if (configured.Length > 0) return configured;
+                if (configured.Length > 0) return Paths2.ToLocal(configured);
+                if (Paths2.UnixDrive != null)
+                {
+                    var env = new Dictionary<string, string>();
+                    foreach (var k in new[] { "XDG_DATA_HOME", "HOME" }) { var v = Environment.GetEnvironmentVariable(k); if (v != null) env[k] = v; }
+                    var unix = Paths2.DefaultUnixBridgeFile(env);
+                    if (unix != null) return unix;
+                }
                 var local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData\\Local");
                 return Path.Combine(Path.Combine(Path.Combine(local, "MTS-Event-Manager"), "capture"), "active-event.json");
             }
@@ -207,6 +242,8 @@ namespace MTSCapture
                 var mtime = File.GetLastWriteTimeUtc(file);
                 if (mtime == bridgeMtime) return;
                 var data = BridgeData.FromJson(ReadText(file));
+                // Paths written by VS Code on Linux/macOS → Wine's drive.
+                Paths2.Apply(data);
                 bridgeMtime = mtime;
                 bool sameEvent = Bridge != null && Bridge.Event == data.Event;
                 Bridge = data;

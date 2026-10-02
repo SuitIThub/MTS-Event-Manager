@@ -12,6 +12,7 @@ import {
   topLevelSpan,
 } from '../src/sceneOps';
 import { checkStructure } from '../src/codeStructure';
+import { applyInEditor, applyPlanned } from './editorSim';
 import { parseLabelsInDocument } from '../src/parseLabels';
 import { buildPersonIndex } from '../src/parsePersons';
 import { buildEventTimeline } from '../src/eventTimeline';
@@ -30,7 +31,7 @@ function walk(d: string, o: string[] = []): string[] {
   return o;
 }
 const idx = buildPersonIndex([], []);
-let moves = 0, moveOk = 0, moveRefused = 0, menus = 0, newEvents = 0, failures = 0;
+let moves = 0, moveOk = 0, moveRefused = 0, menus = 0, newEvents = 0, failures = 0, editorMismatch = 0;
 const fail = (m: string) => { failures++; if (failures <= 15) console.log('FAIL', m); };
 
 const sceneFiles = walk(GAME);
@@ -53,6 +54,8 @@ for (const f of sceneFiles) {
         moveOk++;
         const sc = checkStructure(text, r.edits);
         if (sc) fail(`${name}:${st.start + 1} move ${dir} refused by the structure guard: ${sc}`);
+        // Through VS Code's position model (no position inside CRLF) the result must be the plan.
+        if (applyInEditor(text, r.edits) !== applyPlanned(text, r.edits)) { editorMismatch++; fail(`${name}:${st.start + 1} move ${dir} comes out differently in the editor`); }
         const back = planMoveStatement(r.newText, r.newLine, dir === -1 ? 1 : -1);
         if ('error' in back) { fail(`${name}:${st.start + 1} move ${dir} could not move back: ${back.error}`); continue; }
         if (back.newText !== text) fail(`${name}:${st.start + 1} move ${dir} + back did not round-trip`);
@@ -71,6 +74,7 @@ for (const f of sceneFiles) {
     if ('error' in r) { fail(`${name}:${line + 1} add choice: ${r.error}`); return; }
     const sc = checkStructure(text, r.edits);
     if (sc) fail(`${name}:${line + 1} add choice refused by the structure guard: ${sc}`);
+    if (applyInEditor(text, r.edits) !== applyPlanned(text, r.edits)) { editorMismatch++; fail(`${name}:${line + 1} add choice comes out differently in the editor`); }
     const labels = parseLabelsInDocument(vscode.Uri.file(f), r.newText);
     const span = topLevelSpan(r.newText.split('\n'), line)!;
     if (!labels.some((l) => l.name === `${span.name}.fuzz_choice`)) fail(`${name}:${line + 1} branch label missing`);
@@ -152,5 +156,6 @@ for (const f of walk(GAME)) {
   }
 }
 console.log(`show_image step edits: ${seriesOps} steps verified`);
+console.log(`editor position check: ${editorMismatch} mismatches`);
 console.log(`moves: ${moves} (ok ${moveOk}, refused ${moveRefused}), menus: ${menus}, new events: ${newEvents}, failures: ${failures}`);
 process.exitCode = failures ? 1 : 0;

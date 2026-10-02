@@ -570,6 +570,16 @@ function focusBranch(b) {
 
 /** After a branch/value switch: stay on the stop when the path up to it is unchanged; else go to the last stop before the split. */
 function keptIndex(oldStops, cur, newStops) {
+  // The same stop (line, kind, monologue part) — its text may just have been edited.
+  const was = oldStops[cur];
+  if (was) {
+    let best = -1;
+    newStops.forEach((s, i) => {
+      if (s.line === was.line && s.kind === was.kind && (s.part ?? null) === (was.part ?? null) && (best < 0 || Math.abs(i - cur) < Math.abs(best - cur))) best = i;
+    });
+    if (best >= 0) return best;
+  }
+  // Otherwise: unchanged up to here → same index; else the last unchanged stop before the change.
   const same = (a, b) => a && b && a.line === b.line && a.kind === b.kind && a.text === b.text;
   let k = 0;
   while (k < oldStops.length && k < newStops.length && same(oldStops[k], newStops[k])) k++;
@@ -1013,6 +1023,7 @@ function renderBranchBar() {
   }
 }
 
+let lastReportedLine = -1;
 function goto(i, animate) {
   const stops = state.stops || [];
   if (!stops.length) return;
@@ -1025,6 +1036,8 @@ function goto(i, animate) {
   else { finishAnim(); renderStage(withAlt(stop)); }
   document.getElementById('counter').textContent = (current+1)+' / '+stops.length;
   saveView();
+  if (stop.line !== lastReportedLine) { lastReportedLine = stop.line; vscode.postMessage({ type:'position', line: stop.line }); }
+  if (typeof updatePdNav === 'function') updatePdNav();
   document.getElementById('prev').disabled = current<=0;
   document.getElementById('first').disabled = current<=0;
   document.getElementById('next').disabled = current>=stops.length-1;
@@ -1049,6 +1062,7 @@ document.getElementById('last').addEventListener('click', () => goto((state.stop
 document.getElementById('reveal').addEventListener('click', () => { const s=(state.stops||[])[current]; if (s) vscode.postMessage({ type:'reveal', line:s.line }); });
 document.getElementById('undo').addEventListener('click', () => vscode.postMessage({ type:'undo' }));
 document.getElementById('historybtn').addEventListener('click', () => vscode.postMessage({ type:'openHistory' }));
+document.getElementById('bridgebtn').addEventListener('click', () => vscode.postMessage({ type:'refreshBridge' }));
 document.getElementById('checkbtn').addEventListener('click', openCheck);
 document.getElementById('checkclose').addEventListener('click', () => showModule(null));
 document.getElementById('simbtn').addEventListener('click', openSim);
@@ -1056,6 +1070,33 @@ document.getElementById('simclose').addEventListener('click', () => showModule(n
 document.getElementById('overviewbtn').addEventListener('click', () => vscode.postMessage({ type: 'openOverview' }));
 document.getElementById('optimize').addEventListener('click', () => vscode.postMessage({ type:'optimizeEvent' }));
 document.getElementById('pdclose').addEventListener('click', () => showPaperdoll(false));
+// Paperdoll module: step through the stops (the module follows the doll) or switch characters.
+function pdNav(dir) {
+  const v = document.getElementById('pdvariable');
+  vscode.postMessage({ type:'pdNav', dir, stop: current, variable: v ? v.value.trim() : '' });
+}
+document.getElementById('pdprevstop').addEventListener('click', () => pdNav(-1));
+document.getElementById('pdnextstop').addEventListener('click', () => pdNav(1));
+document.getElementById('pdnextchar').addEventListener('click', () => pdNav(0));
+function updatePdNav() {
+  const stops = (state && state.stops) || [];
+  const stop = stops[current];
+  const dolls = stop && stop.dolls ? stop.dolls.map((d) => d.key) : [];
+  const v = document.getElementById('pdvariable');
+  const at = v ? dolls.indexOf(v.value.trim()) : -1;
+  document.getElementById('pdstop').textContent = stops.length ? 'Stop ' + (current + 1) + '/' + stops.length : '';
+  const ch = document.getElementById('pdnextchar');
+  ch.textContent = '👥 ' + (dolls.length ? (at >= 0 ? at + 1 : '–') + '/' + dolls.length : '0');
+  ch.disabled = dolls.length < 2 && at >= 0;
+  document.getElementById('pdprevstop').disabled = current <= 0;
+  document.getElementById('pdnextstop').disabled = current >= stops.length - 1;
+}
+window.addEventListener('message', (event) => {
+  const m = event.data;
+  if (!m) return;
+  if (m.type === 'pdNavGoto') { goto(m.index); updatePdNav(); }
+  else if (m.type === 'pd:scene' || m.type === 'pd:patch') setTimeout(updatePdNav, 0);
+});
 
 function showPaperdoll(show) { showModule(show ? 'pd' : null); }
 
@@ -1194,7 +1235,9 @@ window.addEventListener('message', (event) => {
     document.getElementById('counter').textContent='0 / 0';
     return;
   }
-  current = msg.keep && prev && prev.stops && prev.stops.length
+  // Stay on the current stop unless the extension navigates (open, "Show in Event Timeline", insert).
+  const sameEvent = prev && prev.stops && prev.stops.length && prev.eventLabel === msg.eventLabel;
+  current = !msg.focus && sameEvent
     ? keptIndex(prev.stops, prevCurrent, msg.stops)
     : Math.max(0, Math.min((msg.stops.length-1), msg.current||0));
   const restore = restoreView && restoreView.eventLabel === msg.eventLabel ? restoreView : null;

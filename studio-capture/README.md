@@ -9,8 +9,8 @@ Full guide: <https://github.com/SuitIThub/MTS-Event-Manager#mts-capture-studione
 
 Requirements: Honey Select 2 with **BepInEx 5** and **KKAPI (HS2API) ≥ 1.46**.
 
-Extract `MTSCapture-<version>.zip` into the game folder (next to `HoneySelect2.exe`). The DLL ends up in
-`BepInEx\plugins\MTSCapture\`. In StudioNEOV2 a camera button appears in the left toolbar.
+Copy `MTSCapture.dll` (from the release) into `<Honey Select 2>\BepInEx\plugins\` (or a subfolder such as
+`plugins\MTSCapture\`). In StudioNEOV2 a camera button appears in the left toolbar. To update, replace the file.
 
 ## Use
 
@@ -38,6 +38,10 @@ screenshots, move older `.webp` aside, list mode, `$` options, check for updates
 window then links to the new release), hotkeys.
 
 Backups: `%LOCALAPPDATA%\MTS-Event-Manager\capture\backup\`.
+
+**Linux / macOS (Wine/Proton):** the bridge file defaults to `~/.local/share/MTS-Event-Manager/capture/active-event.json`
+on both sides, and the Unix paths written by VS Code are mapped onto Wine's drive for `/` (*Unix drive (Wine)*:
+`auto`, usually `Z:`). No manual path conversion needed.
 
 ## Safety
 

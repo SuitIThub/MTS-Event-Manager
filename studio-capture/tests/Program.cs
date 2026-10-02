@@ -27,6 +27,7 @@ internal static class Program
             SafetyTests(tmp, images);
             AssignTests(tmp, images, bridge);
             UpdateTests();
+            PathMapTests();
             if (args.Length > 0) RealBridge(args[0]);
         }
         finally
@@ -35,6 +36,24 @@ internal static class Program
         }
         Console.WriteLine("capture plugin core problems: " + failures);
         return failures == 0 ? 0 : 1;
+    }
+
+    private static void PathMapTests()
+    {
+        var z = new PathMap("Z:");
+        Check(z.ToLocal("/home/me/game/images/ev/x 1.png") == @"Z:\home\me\game\images\ev\x 1.png" && z.ToLocal(@"C:\x.png") == @"C:\x.png", "wine: Unix paths go to the Z: drive, Windows paths stay");
+        Check(new PathMap(null).ToLocal("/home/x") == "/home/x" && new PathMap("off").UnixDrive == null, "plain Windows: no translation");
+        var b = BridgeData.FromJson("{\"version\":1,\"event\":\"e\",\"keys\":[],\"keyValues\":{},\"allowedRoots\":[\"/home/me/game/images\"],\"targets\":[{\"id\":\"a\",\"pattern\":\"main\",\"values\":{},\"status\":\"missing\",\"path\":\"/home/me/game/images/ev/x 1.png\",\"existing\":\"/home/me/game/images/ev/x 1.webp\",\"lines\":[]}]}");
+        z.Apply(b);
+        Check(b.Targets[0].Path == @"Z:\home\me\game\images\ev\x 1.png" && b.Targets[0].Existing.EndsWith(@"x 1.webp") && b.AllowedRoots[0] == @"Z:\home\me\game\images", "wine: bridge targets, existing files and allowed roots are translated");
+        if (Path.DirectorySeparatorChar == '\\')
+            Check(FileSafety.CheckTarget(b.Targets[0].Path, b.AllowedRoots) == null, "wine: translated target passes the path check");
+        var env = new Dictionary<string, string> { { "HOME", "/home/me" } };
+        Check(z.DefaultUnixBridgeFile(env) == @"Z:\home\me\.local\share\MTS-Event-Manager\capture\active-event.json", "wine: default bridge file = the extension's Linux default");
+        env["XDG_DATA_HOME"] = "/data/me";
+        Check(z.DefaultUnixBridgeFile(env) == @"Z:\data\me\MTS-Event-Manager\capture\active-event.json", "wine: XDG_DATA_HOME is respected");
+        Check(PathMap.Detect("auto", d => d.StartsWith("Y:"), true).UnixDrive == "Y:" && PathMap.Detect("auto", d => true, false).UnixDrive == null && PathMap.Detect("W:", d => false, false).UnixDrive == "W:",
+            "drive detection: auto finds the Unix root drive under Wine, nothing on Windows, explicit drive wins");
     }
 
     private static void UpdateTests()

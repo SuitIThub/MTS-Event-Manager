@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { renderPreviewHtml, stopAtScriptLine } from '../src/previewPanel';
+import { paperdollNavTarget, renderPreviewHtml, stopAtScriptLine } from '../src/previewPanel';
 import { fakeWebview, jsonBlocks, webviewBundle } from './webviewTestUtil';
 import { enumeratePaths } from '../src/eventCheck';
 import { parseLabelsInDocument } from '../src/parseLabels';
@@ -48,6 +48,7 @@ for (const [id, json] of jsonBlocks(html)) byId.get(id)!.textContent = json;
 const docRoot = new El('body');
 byId.forEach((e) => docRoot.appendChild(e));
 const posted: any[] = [];
+const docListeners: Record<string, Listener[]> = {};
 const winListeners: Listener[] = [];
 const fakeDocument = {
   // Ids created through innerHTML (paperdoll fields) are not parsed here: create on demand.
@@ -57,6 +58,9 @@ const fakeDocument = {
   },
   createElement: (t: string) => new El(t),
   querySelectorAll: (sel: string) => docRoot.querySelectorAll(sel),
+  body: docRoot,
+  addEventListener: (t: string, fn: Listener) => { (docListeners[t] ??= []).push(fn); },
+  removeEventListener: (t: string, fn: Listener) => { docListeners[t] = (docListeners[t] ?? []).filter((f) => f !== fn); },
 };
 const fakeWindow = { addEventListener: (t: string, fn: Listener) => { if (t === 'message') winListeners.push(fn); }, devicePixelRatio: 1 };
 class FakeImage { onload?: () => void; onerror?: () => void; naturalWidth = 0; naturalHeight = 0; set src(_v: string) {} }
@@ -329,8 +333,24 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
   docRoot.querySelectorAll('.card')[splitAt + 3].click();
   winListeners.forEach((fn) => fn({ data: toMsg(build({ [menuB.id]: 1 }, { school_level: '2' }), true) }));
   check(counter.textContent.startsWith((splitAt + 1) + ' /'), `after the split: back to the last stop before it (${splitAt + 1}): ${counter.textContent}`);
+  // An update after an edit or a save keeps the reader's stop (the stops did not change) …
+  const before = counter.textContent.split(' /')[0];
   winListeners.forEach((fn) => fn({ data: toMsg(stay8, false) }));
-  check(counter.textContent.startsWith('1 /'), 'a normal update (edit) uses the server position');
+  check(counter.textContent.split(' /')[0] === before, `an update after an edit / save keeps the current stop (${before} → ${counter.textContent})`);
+  // … the edited stop's text may change — it is still the same stop.
+  const edited = toMsg(stay8, false);
+  const at = Number(before) - 1;
+  edited.stops = edited.stops.map((s, i) => (i === at ? { ...s, text: s.text + ' (edited)', rawText: ((s as { rawText?: string }).rawText ?? s.text) + ' (edited)' } : s));
+  winListeners.forEach((fn) => fn({ data: edited }));
+  check(counter.textContent.split(' /')[0] === before, `editing the current stop's text keeps it (${counter.textContent})`);
+  // Navigation (open, "Show in Event Timeline", insert) jumps to the server position.
+  winListeners.forEach((fn) => fn({ data: { ...toMsg(stay8, false), focus: true } }));
+  check(counter.textContent.startsWith('1 /'), 'navigation (focus) jumps to the server position');
+  // The page reports the stop it shows, so the extension knows where the reader is.
+  posted.length = 0;
+  docRoot.querySelectorAll('.card')[2].click();
+  const pos = posted.find((m) => m.type === 'position');
+  check(!!pos && pos.line === stay8.stops[2].line, `the page reports its stop line (${JSON.stringify(pos)})`);
 }
 
 // Paperdoll animation between stops (engine order: actions in sequence, PDAPause blocks,
@@ -498,6 +518,72 @@ check(byId.get('editor')!.textContent === '', 'editor stays free when no menu is
   const plain = { ...st, cgVariants: undefined };
   winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'fmt', stops: [plain], markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false } }));
   check(!byId.get('stage')!.all().some((e) => e.className === 'fmtbar'), 'no switch when only one format exists');
+}
+
+// Paperdoll module: the pose grid button opens thumbnails; a tile picks the pose.
+{
+  const poseSel = byId.get('pdv-pose')!;
+  poseSel.textContent = '';
+  for (const v of ['stand', 'sit']) { const o = new El('option'); o.value = v; o.textContent = v; poseSel.appendChild(o); }
+  poseSel.value = 'stand';
+  byId.get('pdcharacter')!.value = 'aona_komuro';
+  byId.get('pdvariable')!.value = 'aona';
+  posted.length = 0;
+  byId.get('pdposegrid')!.click();
+  const req = posted.find((m) => m.type === 'pd:poseThumbs');
+  check(!!req && req.personKey === 'aona_komuro' && req.values?.pose === 'stand' && typeof req.req === 'number', `▦ asks for the pose thumbnails (${JSON.stringify(req && { personKey: req.personKey, pose: req.values?.pose })})`);
+  const gridEl = docRoot.children.find((c) => c.className === 'pd-posegrid');
+  check(!!gridEl, 'the pose grid opens as an overlay');
+  winListeners.forEach((fn) => fn({ data: { type: 'pd:poseThumbs', req: req.req, current: 'stand', poses: ['stand', 'sit', 'kneel'] } }));
+  const tiles = gridEl ? gridEl.all().filter((e) => e.className.startsWith('pg-tile')) : [];
+  check(tiles.length === 3 && tiles[0].className.includes('current'), `one tile per pose, the current one marked (${tiles.length})`);
+  winListeners.forEach((fn) => fn({ data: { type: 'pd:poseThumb', req: req.req, pose: 'sit', thumb: 'data:image/png;base64,AAA' } }));
+  winListeners.forEach((fn) => fn({ data: { type: 'pd:poseThumb', req: req.req - 1, pose: 'kneel', thumb: 'data:stale' } }));
+  check(tiles[1].all().some((e) => e.tagName === 'IMG' && e.src === 'data:image/png;base64,AAA') && !tiles[2].all().some((e) => e.src === 'data:stale'),
+    'thumbnails fill their tile; answers to an older request are ignored');
+  posted.length = 0;
+  tiles[2].click();
+  const change = posted.find((m) => m.type === 'pd:change');
+  check(poseSel.value === 'kneel' && change?.field === 'pose' && change.values?.pose === 'kneel' && !docRoot.children.some((c) => c.className === 'pd-posegrid'),
+    `a tile sets the pose, closes the grid and updates the preview (${JSON.stringify(change && change.values?.pose)})`);
+  byId.get('pdposegrid')!.click();
+  (docListeners.keydown ?? []).forEach((fn) => fn({ key: 'Escape', preventDefault() {} }));
+  check(!docRoot.children.some((c) => c.className === 'pd-posegrid'), 'Esc closes the grid');
+}
+
+// Paperdoll module navigation: the stop, the doll and the call to edit.
+{
+  const stops = [{ line: 10, dolls: ['aona'] }, { line: 20, dolls: ['aona', 'emiko'] }, { line: 30, dolls: ['emiko'] }, { line: 40, dolls: [] }];
+  // aona displayed at 5 and 15, emiko at 18 and 25; a call of the previous event (line 1) never counts.
+  const sites = [{ line: 1, variable: 'emiko' }, { line: 5, variable: 'aona' }, { line: 15, variable: 'aona' }, { line: 18, variable: 'emiko' }, { line: 25, variable: 'emiko' }];
+  const start = () => 3;
+  const n1 = paperdollNavTarget(stops, 0, 1, 'aona', sites, start);
+  check(n1.to === 1 && n1.doll === 'aona' && n1.line === 15, `▶ keeps the doll and edits its last call before the stop (${JSON.stringify(n1)})`);
+  const n2 = paperdollNavTarget(stops, 1, 1, 'aona', sites, start);
+  check(n2.to === 2 && n2.doll === 'emiko' && n2.line === 25, `▶ to a stop without that doll switches to the one on stage (${JSON.stringify(n2)})`);
+  const c1 = paperdollNavTarget(stops, 1, 0, 'aona', sites, start);
+  const c2 = paperdollNavTarget(stops, 1, 0, 'emiko', sites, start);
+  check(c1.to === 1 && c1.doll === 'emiko' && c1.line === 18 && c2.doll === 'aona' && c2.line === 15, `👥 cycles the dolls on stage at this stop (${c1.doll} → ${c2.doll})`);
+  const back = paperdollNavTarget(stops, 0, -1, 'aona', sites, start);
+  const empty = paperdollNavTarget(stops, 2, 1, 'emiko', sites, start);
+  check(back.to === 0 && empty.to === 3 && empty.doll === 'emiko' && empty.line === 25, 'navigation stays in range; a stop without dolls keeps the doll');
+  const noCall = paperdollNavTarget(stops, 0, 0, 'aona', [{ line: 1, variable: 'aona' }], start);
+  check(noCall.line === 10, 'no call in this event → the module anchors at the stop (insert)');
+
+  // Buttons: post the navigation; the extension's answer moves the timeline.
+  const st = (i: number, dolls: string[]) => ({ ...view(tl.stops[0]), index: i, line: 100 + i, kind: 'dialog', text: 'Line ' + i, cg: '', bg: '', dolls: dolls.map((k) => ({ key: k, config: { alignX: 0.5, alignY: 0, zoom: 1, flip: 1, blur: 0, bw: false, color: '#0000', tint: { r: 0, g: 0, b: 0, a: 0 } }, body: '', head: '' })) });
+  winListeners.forEach((fn) => fn({ data: { ...msg, eventLabel: 'pdnav', stops: [st(0, ['aona']), st(1, ['aona', 'emiko']), st(2, [])], markers: [], branches: [], values: {}, valueOptions: {}, current: 0, keep: false, focus: true } }));
+  byId.get('pdvariable')!.value = 'aona';
+  posted.length = 0;
+  byId.get('pdnextstop')!.click();
+  const nav = posted.find((m) => m.type === 'pdNav');
+  check(nav?.dir === 1 && nav.stop === 0 && nav.variable === 'aona', `▶ in the paperdoll module asks for the next stop (${JSON.stringify(nav)})`);
+  winListeners.forEach((fn) => fn({ data: { type: 'pdNavGoto', index: 1 } }));
+  check(byId.get('counter')!.textContent.startsWith('2 /') && byId.get('pdnextchar')!.textContent === '👥 1/2' && byId.get('pdstop')!.textContent === 'Stop 2/3',
+    `the timeline follows; 👥 shows the dolls on stage (${byId.get('pdnextchar')!.textContent}, ${byId.get('pdstop')!.textContent})`);
+  posted.length = 0;
+  byId.get('pdnextchar')!.click();
+  check(posted.some((m) => m.type === 'pdNav' && m.dir === 0 && m.stop === 1), '👥 asks for the next character at this stop');
 }
 
 console.log(`preview UI problems: ${problems}`);

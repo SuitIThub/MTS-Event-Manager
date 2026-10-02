@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { applyReversibleEdit, rollbackLast } from './editHistory';
 import { applyEdits, TextEdit } from './pyCall';
-import { checkStructure } from './codeStructure';
+import { alignCrlfEdits, checkStructure } from './codeStructure';
 
 /**
  * Write edits that were planned and verified against `plannedText`.
@@ -27,7 +27,8 @@ export async function applyVerifiedEdits(
     return 'The file changed while the edit was being prepared. Nothing was written — try again.';
   }
   const eol = doc.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-  const normalized = edits.map((e) => ({ ...e, text: e.text.replace(/\r?\n/g, eol) }));
+  // Line breaks in the file's style; no boundary between \r and \n (the editor cannot place one there).
+  const normalized = alignCrlfEdits(plannedText, edits.map((e) => ({ ...e, text: e.text.replace(/\r?\n/g, eol) })));
   let expected: string;
   try {
     expected = applyEdits(plannedText, normalized);

@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import { poseGridItems, poseThumb } from '../src/paperdollEditor';
+import { catalogForRoots } from '../src/paperdollResolve';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parseLabelsInDocument } from '../src/parseLabels';
@@ -306,6 +308,21 @@ async function main() {
     setWorkspacePresets([...game, ...scanRegisteredPresets('init python:\n    register_preset("mod_far", PDAPreset("outside"), PDAMove(zoom = 0.5))\n')]);
     check(JSON.stringify(expandPresetMoves('mod_far')) === JSON.stringify([{ alignX: -1.5 }, { zoom: 0.5 }]), 'a preset registered elsewhere (mod) is known to the simulation');
     setWorkspacePresets(game);
+  }
+
+  // ── Pose grid: every pose with its layers, rendered as small thumbnails ──
+  {
+    const catalog = catalogForRoots([GAME]);
+    const who = [...catalog.characters.keys()].find((k) => (poseGridItems(catalog, k, {}).length ?? 0) > 1);
+    const items = who ? poseGridItems(catalog, who, {}) : [];
+    const withBody = items.filter((i) => i.layers.body);
+    check(!!who && items.length > 1 && withBody.length === items.length && new Set(withBody.map((i) => i.layers.body)).size === items.length,
+      `pose grid: ${items.length} poses of ${who}, each with its own body layer`);
+    const t0 = Date.now();
+    const thumb = withBody[0] ? await poseThumb(withBody[0].layers.body, withBody[0].layers.head) : undefined;
+    const again = withBody[0] ? await poseThumb(withBody[0].layers.body, withBody[0].layers.head) : undefined;
+    check(!!thumb && thumb.startsWith('data:image/png;base64,') && thumb.length < 200_000 && again === thumb,
+      `pose thumbnail: small PNG (${thumb ? Math.round(thumb.length / 1024) : 0} KB), cached (${Date.now() - t0} ms)`);
   }
 
   // ── Code structure: multi-line strings and statements ──

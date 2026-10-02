@@ -34,6 +34,7 @@ import { parseLabelsInDocument } from './parseLabels';
 import { planAddMenuChoice, planMoveStatement, planRemoveMenuChoice } from './sceneOps';
 import { TextEdit } from './pyCall';
 import { applyCheckedWorkspaceEdit, applyVerifiedEdits } from './safeEdit';
+import { paperdollLensSites } from './paperdollScript';
 import { notifyActiveEvent } from './captureBridge';
 import { FormatVariants, formatVariantsOf, webviewImageUri } from './webviewUri';
 import { lineInsideString, statementEndLine } from './codeStructure';
@@ -95,6 +96,7 @@ export async function showEventPreview(
     void vscode.window.showWarningMessage('Open an event script first.');
     return;
   }
+  pendingFocus = true;
   session = {
     uri: targetUri,
     line: line ?? editor?.selection.active.line ?? 0,
@@ -259,12 +261,27 @@ async function onMessage(
   if (String(msg.type ?? '').startsWith('def:')) {
     if (defEditor) {
       await defEditor.handleMessage(target.webview, msg);
+      if (msg.type === 'def:op' || msg.type === 'def:add') {
+        await publish(context, index, store);
+      }
     }
     return;
   }
   if (String(msg.type ?? '').startsWith('pd:')) {
     if (pdEditor) {
       await pdEditor.handleMessage(target.webview, index, msg);
+      // The paperdoll module writes to the script — the timeline must show it.
+      if (PD_WRITES.has(String(msg.type))) {
+        await publish(context, index, store);
+      }
+    }
+    return;
+  }
+  if (msg.type === 'position') {
+    // The stop the reader is on (the view keeps it across re-maps).
+    const line = Number(msg.line);
+    if (Number.isInteger(line) && line >= 0) {
+      session.line = line;
     }
     return;
   }
@@ -278,6 +295,10 @@ async function onMessage(
       void vscode.window.showInformationMessage(`Reverted: ${result.label}`);
     }
     await publish(context, index, store);
+    return;
+  }
+  if (msg.type === 'refreshBridge') {
+    await vscode.commands.executeCommand('mtsEventManager.refreshCaptureBridge');
     return;
   }
   if (msg.type === 'openHistory') {
@@ -457,6 +478,10 @@ async function onMessage(
       String(msg.title ?? ''),
       String(msg.target ?? '')
     );
+    return;
+  }
+  if (msg.type === 'pdNav') {
+    await paperdollNav(target, index, Number(msg.stop ?? 0), Number(msg.dir ?? 0), String(msg.variable ?? ''));
     return;
   }
   if (msg.type === 'openMarker') {
@@ -1032,6 +1057,7 @@ async function insertVideo(
   if (ok) {
     const videoLine = anchor.lineNumber + rows.length;
     session.line = videoLine;
+    pendingFocus = true;
     await publish(context, index, store);
     if (panel) {
       await sendImageEditor(index, panel, videoLine, key, [0], false, true);
@@ -1074,6 +1100,8 @@ async function plusInsert(
   const ok = await applyCheckedWorkspaceEdit(doc, edit, `Timeline: insert ${snippet.label}`);
   if (ok) {
     session.line = anchor.lineNumber + snippet.anchorOffset;
+    // Show what was just inserted.
+    pendingFocus = true;
     if (kind === 'dialog') {
       pendingEditLine = session.line;
     }
@@ -1252,6 +1280,14 @@ async function sendBgEditor(index: WorkspaceIndex, target: vscode.WebviewPanel, 
 
 /** Dialogue line whose text the next publish opens for editing (a new "＋ Dialogue"). */
 let pendingEditLine: number | undefined;
+/**
+ * The next publish should jump to `session.line` (opening an event, "Show in Event Timeline",
+ * inserted content). Otherwise the view stays on its stop — edits, moves and saves re-map
+ * the timeline without moving the reader.
+ */
+let pendingFocus = true;
+/** Stops of the last publish with the dolls on stage there (for the paperdoll module's navigation). */
+let lastStops: { line: number; dolls: string[] }[] = [];
 
 /** Stop the next publish should show (set by revealInEventTimeline). */
 let pendingFocusStop: number | undefined;
@@ -1354,6 +1390,7 @@ export async function revealInEventTimeline(
   session.selections = { ...selections };
   session.values = Object.keys(values).length ? values : await valuesForSelections(index, session.selections);
   pendingFocusStop = stop >= 0 ? stop : undefined;
+  pendingFocus = true;
   panel?.reveal(undefined, false);
   await publish(context, index, store);
 }
@@ -1430,6 +1467,59 @@ async function runLinePlan(
 function labelsOf(doc: vscode.TextDocument): LabelDefinition[] {
   return parseLabelsInDocument(doc.uri, doc.getText());
 }
+
+/**
+ * Paperdoll module navigation: ◀ / ▶ move to the previous / next stop, 👥 (dir 0) to the next
+ * character on stage at this stop. The module follows to the call that shapes that doll at
+ * the stop — its last display/register at or before the stop — or, if there is none in the
+ * event, to the stop itself (insert mode).
+ */
+async function paperdollNav(target: vscode.WebviewPanel, index: WorkspaceIndex, stop: number, dir: number, variable: string): Promise<void> {
+  if (!session || !pdEditor || !lastStops.length) {
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(session.uri);
+  const text = doc.getText();
+  const labels = labelsOf(doc);
+  const nav = paperdollNavTarget(lastStops, stop, dir, variable, paperdollLensSites(text), (line) => topLevelLabelSpan(labels, line).startLine);
+  pdEditor.setAnchor(session.uri, nav.line, 0, nav.doll || undefined);
+  await target.webview.postMessage({ type: 'pdNavGoto', index: nav.to });
+  await pdEditor.publish(target.webview, index);
+}
+
+/**
+ * Where the paperdoll module goes: the stop (`dir` -1 / +1, or 0 = stay and switch character),
+ * the doll (kept if still on stage there, else the first one on stage; dir 0 = the next one on
+ * stage) and the line to anchor at — that doll's last display/register call in the event at or
+ * before the stop, else the stop's own line.
+ */
+export function paperdollNavTarget(
+  stops: readonly { line: number; dolls: string[] }[],
+  stop: number,
+  dir: number,
+  variable: string,
+  sites: readonly { line: number; variable: string; managerKey?: string }[],
+  eventStart: (line: number) => number
+): { to: number; doll: string; line: number } {
+  const to = Math.max(0, Math.min(stops.length - 1, stop + (dir < 0 ? -1 : dir > 0 ? 1 : 0)));
+  const onStage = stops[to]?.dolls ?? [];
+  let doll = variable;
+  if (dir === 0) {
+    const at = onStage.indexOf(variable);
+    doll = onStage.length ? onStage[(at + 1) % onStage.length] : variable;
+  } else if (!onStage.includes(variable)) {
+    doll = onStage[0] ?? variable;
+  }
+  const stopLine = stops[to]?.line ?? 0;
+  const from = eventStart(stopLine);
+  const call = sites
+    .filter((s) => (s.variable === doll || s.managerKey?.replace(/^['"]|['"]$/g, '') === doll) && s.line >= from && s.line <= stopLine)
+    .pop();
+  return { to, doll, line: call ? call.line : stopLine };
+}
+
+/** Paperdoll module messages that write to the script. */
+const PD_WRITES = new Set(['pd:apply', 'pd:insertDisplay', 'pd:insertRegister', 'pd:insertAtCursor', 'pd:optimize']);
 
 const LINE_ACTIONS = new Set([
   'moveStatement',
@@ -2029,8 +2119,11 @@ async function publishNow(
     });
   }
 
+  lastStops = stops.map((s) => ({ line: s.line, dolls: s.dolls.map((d) => d.key) }));
   const markers = timeline.markers.map((m) => markerView(m, srcLines));
   const current = pendingFocusStop ?? stopIndexForLine(timeline, session.line);
+  const focus = pendingFocus || pendingFocusStop !== undefined || pendingEditLine !== undefined;
+  pendingFocus = false;
   pendingFocusStop = undefined;
   const editLineNow = pendingEditLine;
   pendingEditLine = undefined;
@@ -2050,6 +2143,7 @@ async function publishNow(
     valueOptions: valueOptionsFor(index, timeline.eventLabel, timeline.branches, timeline.values, await patternValuesFor(index, timeline.eventLabel)),
     current: Math.max(0, current),
     keep: keepPosition,
+    focus,
     editLine: editLineNow,
     session: { uri: session.uri.toString(), line: session.line, selections: session.selections, values: session.values },
     missing: stops.length === 0,
@@ -2509,6 +2603,8 @@ function html(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): stri
   }
   .pdhost { flex: 1 1 auto; min-height: 0; overflow: auto; border-top: 1px solid var(--vscode-panel-border); padding: 6px 10px; }
   .pdhost-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin-bottom: 4px; }
+  .pdhost-head .pdnav { display: flex; align-items: center; gap: 4px; font-weight: normal; }
+  .pdhost-head .pdnav-stop { font-size: 11px; opacity: .8; min-width: 48px; text-align: center; }
   .caption select, .caption input, .editor select, .editor input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); padding: 2px 4px; border-radius: 3px; font-size: 11px; }
   .caption select, .caption .type-sel { flex: 0 0 auto; }
   .caption .mono-part { flex: 0 0 auto; font-size: 10px; padding: 0 5px; border-radius: 8px; opacity: 0.8; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.4)); cursor: help; }
@@ -2549,6 +2645,7 @@ function html(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): stri
         <button class="alt" id="simbtn" title="When does this event fire? Simulate time, levels and stats against its conditions and its pool">🎯 Trigger</button>
         <button class="alt" id="overviewbtn" title="Overview of all events">🗂</button>
         <button class="alt" id="undo" title="Undo last timeline change">↩ Undo</button>
+        <button class="alt" id="bridgebtn" title="Write the capture bridge file for the MTS Capture studio plugin again (if the plugin shows an old event)">📷 Bridge</button>
         <button class="alt" id="historybtn" title="Change history: every code change made by the event manager as a diff — revert block by block">🕘 History</button>
       </div>
       <div class="values" id="values" style="display:none"></div>
@@ -2561,7 +2658,12 @@ function html(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): stri
       <div class="effects" id="effects"></div>
       <div class="editor" id="editor"></div>
       <div class="pdhost" id="pdhost" style="display:none">
-        <div class="pdhost-head"><span>Paperdoll</span><button class="alt" id="pdclose" title="Close">✕</button></div>
+        <div class="pdhost-head"><span>Paperdoll</span><span class="pdnav">
+          <button class="alt" id="pdprevstop" title="Previous stop — the module follows to the paperdoll that matters there">◀</button>
+          <span id="pdstop" class="pdnav-stop"></span>
+          <button class="alt" id="pdnextstop" title="Next stop — the module follows to the paperdoll that matters there">▶</button>
+          <button class="alt" id="pdnextchar" title="Next character on stage at this stop">👥</button>
+          <button class="alt" id="pdclose" title="Close">✕</button></span></div>
         ${PaperdollEditor.controlsHtml()}
       </div>
       <div class="pdhost" id="defhost" style="display:none">

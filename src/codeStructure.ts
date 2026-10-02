@@ -384,3 +384,25 @@ export function sayParts(text: string, quoteAt: number, mode?: MonologueMode): S
     return { start, end, line: lineOf(start), text: text.slice(start, end).replace(/\s*\n\s*/g, ' ') };
   });
 }
+
+/**
+ * Editors cannot address a position between `\r` and `\n` (VS Code treats CRLF as one line
+ * break and clamps such positions to the line end). Edit boundaries there are moved outside the
+ * pair — the `\r` / `\n` joins the replaced range and the new text — so the result is the same,
+ * character for character, but every boundary is a real position.
+ */
+export function alignCrlfEdits<T extends PlainEdit>(text: string, edits: readonly T[]): T[] {
+  const inside = (o: number) => o > 0 && o < text.length && text.charCodeAt(o - 1) === 13 && text.charCodeAt(o) === 10;
+  return edits.map((e) => {
+    let { start, end, text: t } = e;
+    if (inside(start)) {
+      start -= 1;
+      t = '\r' + t;
+    }
+    if (inside(end) && end >= start) {
+      end += 1;
+      t = t + '\n';
+    }
+    return start === e.start && end === e.end ? e : { ...e, start, end, text: t };
+  });
+}

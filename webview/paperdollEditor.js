@@ -29,8 +29,14 @@ function mountPaperdollEditor(vscode) {
   function buildFields() {
     for (const f of FIELDS) {
       const cell = document.createElement('div'); cell.className = 'cell';
-      cell.innerHTML = '<label class="top"><input type="checkbox" id="pdc-' + f.field + '" />' + f.label + '</label><select id="pdv-' + f.field + '"></select>';
+      const select = '<select id="pdv-' + f.field + '"></select>';
+      // Pose: a button next to the dropdown opens a grid of thumbnails.
+      const control = f.field === 'pose'
+        ? '<div class="pd-selrow">' + select + '<button type="button" class="alt pd-gridbtn" id="pdposegrid" title="Choose the pose from thumbnails">▦</button></div>'
+        : select;
+      cell.innerHTML = '<label class="top"><input type="checkbox" id="pdc-' + f.field + '" />' + f.label + '</label>' + control;
       $(f.group).appendChild(cell);
+      if (f.field === 'pose') $('posegrid').addEventListener('click', openPoseGrid);
       $('v-' + f.field).addEventListener('change', () => vscode.postMessage({ type: 'pd:change', field: f.field, ...draft() }));
     }
   }
@@ -137,10 +143,85 @@ function mountPaperdollEditor(vscode) {
   $('insertAtCursor').addEventListener('click', () => vscode.postMessage({ type: 'pd:insertAtCursor', ...draft() }));
   $('copy').addEventListener('click', () => vscode.postMessage({ type: 'pd:copy', text: $('snippet').textContent }));
   $('reload').addEventListener('click', () => vscode.postMessage({ type: 'pd:refreshAssets' }));
+  // ── Pose grid ──
+  let poseReq = 0;
+  let grid = null;
+  function closePoseGrid() {
+    if (grid) { grid.root.remove(); document.removeEventListener('keydown', grid.onKey, true); grid = null; }
+  }
+  function choosePose(pose) {
+    const sel = $('v-pose');
+    if (![...sel.options].some((o) => o.value === pose)) { const n = document.createElement('option'); n.value = pose; n.textContent = pose; sel.appendChild(n); }
+    sel.value = pose;
+    closePoseGrid();
+    vscode.postMessage({ type: 'pd:change', field: 'pose', ...draft() });
+  }
+  function openPoseGrid() {
+    closePoseGrid();
+    const req = ++poseReq;
+    const root = document.createElement('div'); root.className = 'pd-posegrid';
+    const head = document.createElement('div'); head.className = 'pg-head';
+    const title = document.createElement('span'); title.className = 'pg-title';
+    const charSel = $('character');
+    title.textContent = 'Pose · ' + (charSel.options[charSel.selectedIndex] ? charSel.options[charSel.selectedIndex].textContent : charSel.value);
+    const filter = document.createElement('input'); filter.type = 'text'; filter.placeholder = 'Filter poses…';
+    const grow = document.createElement('span'); grow.className = 'pg-grow';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'alt'; close.textContent = '✕'; close.title = 'Close (Esc)';
+    close.addEventListener('click', closePoseGrid);
+    head.appendChild(title); head.appendChild(filter); head.appendChild(grow); head.appendChild(close);
+    const list = document.createElement('div'); list.className = 'pg-list';
+    list.textContent = 'Loading poses…';
+    root.appendChild(head); root.appendChild(list);
+    document.body.appendChild(root);
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); closePoseGrid(); } };
+    document.addEventListener('keydown', onKey, true);
+    filter.addEventListener('input', () => {
+      const q = filter.value.trim().toLowerCase();
+      for (const tile of grid ? grid.tiles.values() : []) tile.el.style.display = !q || tile.pose.toLowerCase().includes(q) ? '' : 'none';
+    });
+    grid = { req, root, list, filter, onKey, tiles: new Map() };
+    vscode.postMessage({ type: 'pd:poseThumbs', req, ...draft() });
+    if (filter.focus) filter.focus();
+  }
+  function fillPoseGrid(msg) {
+    if (!grid || msg.req !== grid.req) return;
+    grid.list.textContent = '';
+    if (!msg.poses || !msg.poses.length) { grid.list.textContent = 'No poses found for this character.'; return; }
+    for (const pose of msg.poses) {
+      const el = document.createElement('div'); el.className = 'pg-tile' + (pose === msg.current ? ' current' : ''); el.title = pose;
+      const box = document.createElement('div'); box.className = 'pg-img';
+      const wait = document.createElement('span'); wait.className = 'pg-wait'; wait.textContent = '…'; box.appendChild(wait);
+      const label = document.createElement('div'); label.className = 'pg-label'; label.textContent = pose;
+      el.appendChild(box); el.appendChild(label);
+      el.addEventListener('click', () => choosePose(pose));
+      grid.list.appendChild(el);
+      grid.tiles.set(pose, { pose, el, box });
+    }
+    const cur = grid.tiles.get(msg.current);
+    if (cur && cur.el.scrollIntoView) cur.el.scrollIntoView({ block: 'center' });
+  }
+  function fillPoseThumb(msg) {
+    if (!grid || msg.req !== grid.req) return;
+    const tile = grid.tiles.get(msg.pose);
+    if (!tile) return;
+    tile.box.textContent = '';
+    if (msg.thumb) {
+      const im = document.createElement('img'); im.src = msg.thumb; im.alt = msg.pose; tile.box.appendChild(im);
+    } else if (msg.body || msg.head) {
+      // No thumbnail renderer available: draw the full layers small.
+      const canvas = document.createElement('canvas'); tile.box.appendChild(canvas);
+      void drawDoll(canvas, { body: msg.body, head: msg.head, config: { flip: 1, bw: false, tint: null } });
+    } else {
+      const none = document.createElement('span'); none.className = 'pg-wait'; none.textContent = 'no image'; tile.box.appendChild(none);
+    }
+  }
+
   buildFields();
   window.addEventListener('message', (event) => {
     const msg = event.data;
-    if (msg.type === 'pd:scene') applyScene(msg);
+    if (msg.type === 'pd:poseThumbs') fillPoseGrid(msg);
+    else if (msg.type === 'pd:poseThumb') fillPoseThumb(msg);
+    else if (msg.type === 'pd:scene') applyScene(msg);
     else if (msg.type === 'pd:patch') applyPatch(msg);
     else if (msg.type === 'pd:snippet') { $('snippet').textContent = msg.snippet || ''; $('note').textContent = msg.note || ''; }
   });

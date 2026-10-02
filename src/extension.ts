@@ -6,7 +6,7 @@ import { initHistory } from './editHistory';
 import { registerHistorySerializer, showHistoryPanel } from './historyPanel';
 import { registerUpdateCheck } from './updateCheck';
 import { initWebviewAssets } from './webviewAssets';
-import { CaptureBridge } from './captureBridge';
+import { CaptureBridge, refreshCaptureBridge } from './captureBridge';
 import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
 import { registerPreviewSerializer } from './previewPanel';
@@ -44,6 +44,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(index, diagnostics, portraits);
   // StudioNeoV2 capture plugin: the event editor's event is exported as a JSON bridge file.
   context.subscriptions.push(new CaptureBridge(index));
+  context.subscriptions.push(vscode.commands.registerCommand('mtsEventManager.refreshCaptureBridge', () => refreshCaptureBridge()));
 
   registerCommands(context, index, portraits);
   // Reopen the event preview / overview after a window reload, in their last state.

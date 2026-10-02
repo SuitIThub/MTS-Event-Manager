@@ -2,7 +2,7 @@
   "name": "mts-event-manager",
   "displayName": "MTS Event Manager",
   "description": "Event editor, timeline preview, checks and authoring helpers for Mind the School (Ren'Py) events and mods — with a StudioNeoV2 capture plugin.",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "publisher": "mts",
   "engines": {
     "vscode": "^1.85.0"
@@ -91,6 +91,10 @@
       {
         "command": "mtsEventManager.showHistory",
         "title": "MTS: Change History"
+      },
+      {
+        "command": "mtsEventManager.refreshCaptureBridge",
+        "title": "MTS: Refresh Capture Bridge"
       }
     ],
     "menus": {
@@ -113,7 +117,7 @@
         "mtsEventManager.capture.bridgeFile": {
           "type": "string",
           "default": "",
-          "description": "Bridge file for the StudioNeoV2 capture plugin. Empty: %LOCALAPPDATA%\\MTS-Event-Manager\\capture\\active-event.json (the plugin's default too)."
+          "description": "Bridge file for the StudioNeoV2 capture plugin. Empty: %LOCALAPPDATA%\\MTS-Event-Manager\\capture\\active-event.json on Windows, ~/.local/share/MTS-Event-Manager/capture/active-event.json on Linux/macOS — the plugin's defaults too (also under Wine/Proton). ~ and a Wine path (Z:\\home\\…) are accepted."
         },
         "mtsEventManager.checkForUpdates": {
           "type": "boolean",

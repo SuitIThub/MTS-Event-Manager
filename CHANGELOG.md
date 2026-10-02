@@ -7,6 +7,50 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.3] - 2026-09-30
+
+### Added
+- **Pose grid** in the paperdoll module: the **▦** button next to *Pose* opens every pose of the
+  character as a thumbnail — rendered with the other current values (outfit, level, mood …).
+  Filter by name, click a pose to take it, Esc closes. Thumbnails are rendered small and cached.
+- **Paperdoll module navigation** in the event editor: **◀ / ▶** step through the timeline's stops
+  and the module follows to the paperdoll that matters there (the doll's last display/register up
+  to that stop; another doll on stage if it left). **👥 n/m** switches between the characters on
+  stage at the current stop.
+
+- **Refresh the capture bridge** by hand: command **MTS: Refresh Capture Bridge** or **📷 Bridge** in
+  the event editor deletes the bridge file and writes the open event again right away — no more
+  deleting the file by hand (user suggestion).
+
+- **Linux / macOS with the studio under Wine/Proton** work without manual path setup: the bridge
+  file defaults to `~/.local/share/MTS-Event-Manager/capture/active-event.json` (or `$XDG_DATA_HOME`)
+  on both sides, and the plugin maps the extension's Unix paths onto Wine's drive for `/` (auto-
+  detected, usually `Z:`; plugin setting *Unix drive (Wine)*). Both bridge-path settings accept
+  either form (`~/…`, `/home/…`, `Z:\home\…`). (User report.)
+
+- **Linux VSIX**: each release now has `mts-event-manager-<v>-linux-x64.vsix` (with the Linux image
+  libraries — hover previews, portraits and pose thumbnails work) next to the Windows package
+  `…-win32-x64.vsix`.
+
+### Changed
+- The plugin is attached to the release as `MTSCapture.dll` (no zip) — copy it into
+  `BepInEx/plugins/`.
+
+### Fixed
+- The capture bridge could stay stale: on Windows the file replace fails while the studio plugin
+  is reading it, and the error was only logged to the console. The write now retries and falls
+  back to writing in place; failures are listed in the *MTS Capture Bridge* output channel and
+  reported by the refresh command.
+- The event editor no longer jumps back to the first stop after an edit, a statement move or a
+  save — it stays on the stop you are reading (also when that stop's text was edited). Only
+  navigation (opening an event, *Show in Event Timeline*, inserting new content) moves the view.
+- Moving statements and markers failed in files with Windows line endings (CRLF — all game
+  scripts) with "the edit did not come out as verified and was rolled back": the edit ended between
+  `\r` and `\n`, a position the editor cannot address. Edit boundaries are now kept outside CRLF
+  for every write, and the tests check all moves and menu edits through the editor's position model.
+- Writes from the paperdoll module (*Insert display*, *Apply*, *Insert register*, *Optimize* …) and
+  the definition editor update the timeline right away.
+
 ## [0.6.2] - 2026-09-27
 
 ### Added

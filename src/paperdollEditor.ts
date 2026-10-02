@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { loadSharp } from './sharpRuntime';
+import * as fs from 'fs';
 import { webviewImageUri } from './webviewUri';
 import { applyCheckedWorkspaceEdit } from './safeEdit';
 import { lineInsideString, statementEndLine } from './codeStructure';
@@ -101,7 +103,7 @@ interface Draft {
  * through the shared reversible edit history.
  */
 export class PaperdollEditor {
-  private session?: { uri: vscode.Uri; line: number; character: number };
+  private session?: { uri: vscode.Uri; line: number; character: number; prefer?: string };
   private cursor?: { line: number; character: number };
   private latest?: { analysis: PaperdollAnalysis; catalog: PaperdollCatalog; persons: PersonIndexData };
 
@@ -113,8 +115,9 @@ export class PaperdollEditor {
     return !!this.session;
   }
 
-  setAnchor(uri: vscode.Uri, line: number, character: number): void {
-    this.session = { uri, line, character };
+  /** `prefer`: the doll variable to show when the anchor is not one of its calls. */
+  setAnchor(uri: vscode.Uri, line: number, character: number, prefer?: string): void {
+    this.session = { uri, line, character, prefer };
     this.cursor = { line, character };
   }
 
@@ -158,6 +161,10 @@ export class PaperdollEditor {
       await this.replyCharacter(webview, String(msg.personKey ?? ''));
       return true;
     }
+    if (type === 'pd:poseThumbs') {
+      await this.replyPoseThumbs(webview, msg);
+      return true;
+    }
     if (
       type === 'pd:apply' ||
       type === 'pd:insertDisplay' ||
@@ -192,8 +199,10 @@ export class PaperdollEditor {
     const catalog = await loadPaperdollCatalog();
     this.latest = { analysis, catalog, persons };
     const call = analysis.call;
+    const prefer = this.session.prefer;
     const active =
       (call && analysis.scene.dolls.find((d) => d.variable === call.variable)) ||
+      (prefer ? analysis.scene.dolls.find((d) => d.variable === prefer && !d.hidden) : undefined) ||
       analysis.scene.dolls.find((d) => !d.hidden) ||
       analysis.scene.dolls[0];
     const personKey = active?.personKey ?? [...catalog.characters.keys()].sort()[0] ?? '';
@@ -249,6 +258,41 @@ export class PaperdollEditor {
       bodyName: layers.body ? fileName(layers.body) : '',
       headName: layers.head ? fileName(layers.head) : '',
     });
+  }
+
+  /**
+   * The pose grid: every pose of the character with the other current values (outfit, level,
+   * mood …), as small thumbnails. The list comes first; each thumbnail follows when rendered.
+   */
+  private async replyPoseThumbs(webview: vscode.Webview, msg: Record<string, unknown>): Promise<void> {
+    if (!this.latest) {
+      return;
+    }
+    const draft = readDraft(msg);
+    if (!draft) {
+      return;
+    }
+    const req = Number(msg.req ?? 0);
+    const items = poseGridItems(this.latest.catalog, draft.personKey, draft.values, altFor(this.latest.analysis, draft.variable, draft.personKey));
+    const poses = items.map((i) => i.pose);
+    await webview.postMessage({ type: 'pd:poseThumbs', req, current: draft.values.pose, poses });
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const item = items[next++];
+        const thumb = await poseThumb(item.layers.body, item.layers.head);
+        await webview.postMessage({
+          type: 'pd:poseThumb',
+          req,
+          pose: item.pose,
+          // Without sharp: the full layers, drawn by the page.
+          thumb: thumb ?? '',
+          body: thumb ? '' : uriOf(webview, item.layers.body),
+          head: thumb ? '' : uriOf(webview, item.layers.head),
+        });
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
   }
 
   private async replyCharacter(webview: vscode.Webview, personKey: string): Promise<void> {
@@ -712,6 +756,58 @@ function uriOf(webview: vscode.Webview, fsPath: string | undefined): string {
   return webviewImageUri(webview, fsPath);
 }
 
+/**
+ * Every pose of a character with the layers it shows when the other current values are kept
+ * (fields that do not exist for a pose fall back like in the dropdowns).
+ */
+export function poseGridItems(
+  catalog: PaperdollCatalog,
+  personKey: string,
+  values: Record<string, string>,
+  altKeys: string[] = HOUSE_ALT_KEYS
+): { pose: string; layers: { body?: string; head?: string } }[] {
+  const poses = cascade(catalog, personKey, values).options.pose ?? [];
+  return poses.map((pose) => {
+    const v = cascade(catalog, personKey, { ...values, pose }, 'pose').values;
+    return { pose, layers: resolveLayers(catalog, personKey, v, altKeys) };
+  });
+}
+
+const POSE_THUMB_W = 150;
+const POSE_THUMB_H = 270;
+/** Rendered pose thumbnails (data URIs), keyed by layer files + modification times. */
+const poseThumbCache = new Map<string, string>();
+
+/** Body + head composited into a small PNG (undefined when sharp is unavailable). */
+export async function poseThumb(body: string | undefined, head: string | undefined): Promise<string | undefined> {
+  const layers = [body, head].filter((f): f is string => !!f && fs.existsSync(f));
+  if (!layers.length) {
+    return '';
+  }
+  const key = layers.map((f) => `${f}@${fs.statSync(f).mtimeMs}`).join('|');
+  const hit = poseThumbCache.get(key);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const sharp = await loadSharp();
+  if (!sharp) {
+    return undefined;
+  }
+  try {
+    const fit = { fit: 'contain' as const, background: { r: 0, g: 0, b: 0, alpha: 0 } };
+    const [base, ...over] = await Promise.all(layers.map((f) => sharp(f).resize(POSE_THUMB_W, POSE_THUMB_H, fit).png().toBuffer()));
+    const buf = await sharp(base).composite(over.map((input) => ({ input }))).png().toBuffer();
+    const uri = `data:image/png;base64,${buf.toString('base64')}`;
+    if (poseThumbCache.size > 500) {
+      poseThumbCache.clear();
+    }
+    poseThumbCache.set(key, uri);
+    return uri;
+  } catch {
+    return '';
+  }
+}
+
 function fileName(fsPath: string): string {
   return fsPath.split(/[/\\]/).pop() ?? fsPath;
 }
@@ -786,6 +882,22 @@ function samePlace(a: PdConfig, b: PdConfig): boolean {
 
 const PD_STYLES = `
   .pd-root { container-type: inline-size; color: var(--vscode-foreground); font-size: 12px; }
+  .pd-root .pd-gridbtn { flex: 0 0 auto; padding: 0 6px; margin-left: 4px; line-height: 18px; }
+  .pd-root .pd-selrow { display: flex; align-items: center; min-width: 0; }
+  .pd-root .pd-selrow select { flex: 1 1 auto; min-width: 0; }
+  .pd-posegrid { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: color-mix(in srgb, var(--vscode-editor-background) 94%, transparent); }
+  .pd-posegrid .pg-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
+  .pd-posegrid .pg-head .pg-title { font-weight: 600; }
+  .pd-posegrid .pg-head input { flex: 1; max-width: 260px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); padding: 2px 6px; }
+  .pd-posegrid .pg-head .pg-grow { flex: 1; }
+  .pd-posegrid .pg-list { flex: 1; overflow: auto; padding: 10px 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; align-content: start; }
+  .pd-posegrid .pg-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 4px; cursor: pointer; background: var(--vscode-sideBar-background, transparent); }
+  .pd-posegrid .pg-tile:hover { border-color: var(--vscode-focusBorder); }
+  .pd-posegrid .pg-tile.current { border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 1px var(--vscode-focusBorder) inset; }
+  .pd-posegrid .pg-img { width: 100%; aspect-ratio: 5 / 9; display: flex; align-items: center; justify-content: center; background: #1b1b1b; border-radius: 3px; overflow: hidden; }
+  .pd-posegrid .pg-img img, .pd-posegrid .pg-img canvas { max-width: 100%; max-height: 100%; }
+  .pd-posegrid .pg-img .pg-wait { opacity: .5; font-size: 11px; }
+  .pd-posegrid .pg-label { font-size: 11px; text-align: center; word-break: break-all; }
   .pd-root .pd-stage-col { display: flex; flex-direction: column; gap: 4px; }
   .pd-root .pd-stage-frame { height: 32vh; min-height: 140px; container-type: size; display: flex; align-items: center; justify-content: center; }
   .pd-root #pdstage { position: relative; width: min(100%, calc(100cqh * 16 / 9)); aspect-ratio: 16/9; max-height: 100%; overflow: hidden; background: #161616;
