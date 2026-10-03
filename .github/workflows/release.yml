@@ -197,7 +197,17 @@ jobs:
         run: npm run verify:units
 
       - name: Image library loads on Linux
-        run: node -e "require('sharp'); console.log('sharp', require('sharp/package.json').version, 'ok')"
+        # Renders a tiny PNG, so the native binary really runs (sharp does not export package.json).
+        run: |
+          cat > sharp-check.js <<'EOF'
+          const sharp = require('sharp');
+          sharp({ create: { width: 2, height: 2, channels: 3, background: '#808080' } })
+            .png().toBuffer()
+            .then((buf) => console.log('sharp', sharp.versions.sharp, 'vips', sharp.versions.vips, 'ok:', buf.length, 'byte PNG'))
+            .catch((err) => { console.error(err); process.exit(1); });
+          EOF
+          node sharp-check.js
+          rm sharp-check.js
 
       - name: Package (Linux VSIX)
         run: |
