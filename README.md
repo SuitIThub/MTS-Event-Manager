@@ -136,6 +136,8 @@ after a window reload.
   - **Definition** opens the `Event(...)` editor; **New event** creates a new event.
   - **✨ Optimize**, **Check**, **Simulate** and **Overview** are described below.
   - **↩ Undo** reverts the last timeline change; **🕘 History** opens the change history.
+  - **⟳ Reload** reads all scripts again and rebuilds the view (and the capture bridge) — for changes made
+    outside the editor that do not show up.
 - **Values bar:** the event's selector keys (e.g. `school_level`, `topic`, `girl_name`). Choose a value to see
   the images and text for it; `[topic]`-style interpolations follow.
 - **Branch bar:** every `call_custom_menu(...)` choice and `if`/`elif` on the current path. Pick one and the

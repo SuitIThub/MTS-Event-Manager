@@ -324,7 +324,11 @@ export class WorkspaceIndex {
     }, delayMs);
   }
 
-  async reindex(): Promise<void> {
+  /** `full`: re-read and re-parse every file, not only those whose text or mtime changed. */
+  async reindex(full = false): Promise<void> {
+    if (full) {
+      this.fileCache.clear();
+    }
     const files = await vscode.workspace.findFiles('**/*.rpy', '**/{node_modules,out,.git}/**');
     const events: EventDefinition[] = [];
     const labels = new Map<string, LabelDefinition[]>();

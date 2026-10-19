@@ -35,7 +35,7 @@ import { planAddMenuChoice, planMoveStatement, planRemoveMenuChoice } from './sc
 import { TextEdit } from './pyCall';
 import { applyCheckedWorkspaceEdit, applyVerifiedEdits } from './safeEdit';
 import { paperdollLensSites } from './paperdollScript';
-import { notifyActiveEvent } from './captureBridge';
+import { notifyActiveEvent, refreshCaptureBridge } from './captureBridge';
 import { FormatVariants, formatVariantsOf, webviewImageUri } from './webviewUri';
 import { lineInsideString, statementEndLine } from './codeStructure';
 import {
@@ -80,6 +80,34 @@ let lastBranches: BranchPoint[] = [];
 let lastValues: Record<string, string> = {};
 /** Event label of the last published timeline. */
 let lastEventLabel = '';
+/**
+ * Where that event's label stood at the last publish: lines added or removed above it (by
+ * another editor, an AI agent, a definition edit) shift the session line along with it.
+ * line -1: only the name is known (restored session).
+ */
+let anchor: { label: string; line: number } | undefined;
+/** The session as last published, kept in the workspace state for the next window load. */
+const SESSION_KEY = 'mtsEventManager.previewSession';
+interface StoredSession {
+  uri: string;
+  line: number;
+  selections: Record<string, number>;
+  values: Record<string, string>;
+  event: string;
+}
+/** Set in deactivate: the panel disposal that follows is a window reload, not a close. */
+let shuttingDown = false;
+/** True while VS Code revives the panel through the serializer. */
+let reviving = false;
+let log: vscode.LogOutputChannel | undefined;
+function trace(message: string): void {
+  log ??= vscode.window.createOutputChannel('MTS Event Preview', { log: true });
+  log.info(message);
+}
+
+export function previewShutdown(): void {
+  shuttingDown = true;
+}
 
 export async function showEventPreview(
   context: vscode.ExtensionContext,
@@ -103,6 +131,7 @@ export async function showEventPreview(
     selections: {},
     values: {},
   };
+  anchor = undefined;
   ensureHelpers(context, index);
 
   if (panel) {
@@ -111,14 +140,70 @@ export async function showEventPreview(
     await publish(context, index, store);
     return;
   }
+  await createPanel(context, index, store, false);
+}
 
+/**
+ * A new panel for the current session. A preview tab VS Code restored but never handed to the
+ * extension (no serializer call) is replaced in place — same group, same window — instead of
+ * leaving a dead page next to the new one.
+ */
+async function createPanel(context: vscode.ExtensionContext, index: WorkspaceIndex, store: PortraitStore, preserveFocus: boolean): Promise<void> {
+  const orphans = previewTabs();
+  const column = orphans[0]?.group.viewColumn ?? lastColumn(context, 'preview', vscode.ViewColumn.Beside);
   const created = vscode.window.createWebviewPanel(
     'mtsEventPreview',
     'MTS Event Preview',
-    { viewColumn: lastColumn(context, 'preview', vscode.ViewColumn.Beside), preserveFocus: false },
+    { viewColumn: column, preserveFocus },
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: await previewRoots(context, store) }
   );
   adoptPanel(context, index, store, created);
+  if (orphans.length) {
+    trace(`replacing ${orphans.length} unrestored preview tab(s) in column ${column}`);
+    // After the new panel exists, so a separate window holding only the old tab stays open.
+    await Promise.resolve(vscode.window.tabGroups.close(orphans, true)).catch((e) => trace(`closing old tab failed: ${e}`));
+  }
+}
+
+/** Preview tabs in any group or window (while no panel is adopted, these are orphans). */
+function previewTabs(): vscode.Tab[] {
+  return vscode.window.tabGroups.all
+    .flatMap((g) => g.tabs)
+    .filter((t) => t.input instanceof vscode.TabInputWebview && t.input.viewType.endsWith('mtsEventPreview'));
+}
+
+/**
+ * After the extension activated: re-establish the session stored by the last window. The
+ * capture bridge gets the event right away; the panel is normally revived by the serializer —
+ * if VS Code shows the tab but never revives it (seen with panels in a separate window), it is
+ * replaced by a new panel in the same place.
+ */
+export function restorePreviewSession(context: vscode.ExtensionContext, index: WorkspaceIndex, store: PortraitStore): void {
+  const saved = context.workspaceState.get<StoredSession>(SESSION_KEY);
+  trace(`activated: stored session=${saved?.event ?? 'none'} panel=${!!panel} tabs=${previewTabs().length}`);
+  if (!saved?.uri || panel) {
+    return;
+  }
+  if (!previewTabs().length) {
+    void context.workspaceState.update(SESSION_KEY, undefined);
+    return;
+  }
+  const uri = vscode.Uri.parse(saved.uri);
+  if (saved.event) {
+    notifyActiveEvent({ uri, line: saved.line, event: saved.event });
+  }
+  setTimeout(() => {
+    const visible = previewTabs().some((t) => t.isActive);
+    trace(`restore check: panel=${!!panel} reviving=${reviving} visibleTab=${visible}`);
+    // A hidden tab is only revived once shown; opening the preview replaces it if it is not.
+    if (panel || reviving || !visible) {
+      return;
+    }
+    session = { uri, line: saved.line, selections: saved.selections ?? {}, values: saved.values ?? {} };
+    anchor = saved.event ? { label: saved.event, line: -1 } : undefined;
+    ensureHelpers(context, index);
+    void createPanel(context, index, store, true);
+  }, 4000);
 }
 
 async function previewRoots(context: vscode.ExtensionContext, store: PortraitStore): Promise<vscode.Uri[]> {
@@ -137,22 +222,41 @@ export function registerPreviewSerializer(
 ): vscode.Disposable {
   return vscode.window.registerWebviewPanelSerializer('mtsEventPreview', {
     async deserializeWebviewPanel(restored: vscode.WebviewPanel, saved: unknown) {
-      const s = (saved ?? {}) as { session?: { uri?: string; line?: number; selections?: Record<string, number>; values?: Record<string, string> } };
+      const s = (saved ?? {}) as {
+        session?: { uri?: string; line?: number; selections?: Record<string, number>; values?: Record<string, string> };
+        eventLabel?: string;
+      };
+      trace(`revive: session=${s.eventLabel ?? s.session?.uri ?? 'none'} panel=${!!panel}`);
       if (!s.session?.uri || panel) {
         restored.dispose();
         return;
       }
-      session = {
-        uri: vscode.Uri.parse(s.session.uri),
-        line: Number(s.session.line ?? 0),
-        selections: s.session.selections ?? {},
-        values: s.session.values ?? {},
-      };
-      ensureHelpers(context, index);
-      restored.webview.options = { enableScripts: true, localResourceRoots: await previewRoots(context, store) };
-      adoptPanel(context, index, store, restored);
-      // The index is usually still building after a reload: map again once it is ready.
-      pendingSaveRemap = true;
+      reviving = true;
+      try {
+        const roots = await previewRoots(context, store);
+        if (panel) {
+          // Replaced meanwhile (restorePreviewSession).
+          restored.dispose();
+          return;
+        }
+        session = {
+          uri: vscode.Uri.parse(s.session.uri),
+          line: Number(s.session.line ?? 0),
+          selections: s.session.selections ?? {},
+          values: s.session.values ?? {},
+        };
+        anchor = s.eventLabel ? { label: s.eventLabel, line: -1 } : undefined;
+        ensureHelpers(context, index);
+        restored.webview.options = { enableScripts: true, localResourceRoots: roots };
+        adoptPanel(context, index, store, restored);
+        // The index is usually still building after a reload: map again once it is ready.
+        pendingSaveRemap = true;
+      } catch (e) {
+        trace(`revive failed: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+        throw e;
+      } finally {
+        reviving = false;
+      }
     },
   });
 }
@@ -184,12 +288,29 @@ function adoptPanel(context: vscode.ExtensionContext, index: WorkspaceIndex, sto
   panel = created;
   trackColumn(context, 'preview', created);
   context.subscriptions.push(created);
-  // Only re-map on a saved change to the session file — never on every keystroke.
-  const saveSub = vscode.workspace.onDidSaveTextDocument((d) => {
-    if (session && d.uri.toString() === session.uri.toString()) {
-      pendingSaveRemap = true;
-    }
-  });
+  // Only re-map on a saved change to the session file — never on every keystroke. A change
+  // written to disk by another program (an AI agent, git) counts as saved: VS Code reloads the
+  // clean buffer without a save event, and a closed file only changes on disk.
+  const isSession = (uri: vscode.Uri) => !!session && uri.toString() === session.uri.toString();
+  const rpyWatcher = vscode.workspace.createFileSystemWatcher('**/*.rpy');
+  const saveSub = vscode.Disposable.from(
+    vscode.workspace.onDidSaveTextDocument((d) => {
+      if (isSession(d.uri)) {
+        pendingSaveRemap = true;
+      }
+    }),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (isSession(e.document.uri) && e.contentChanges.length && !e.document.isDirty) {
+        pendingSaveRemap = true;
+      }
+    }),
+    rpyWatcher,
+    rpyWatcher.onDidChange((uri) => {
+      if (isSession(uri)) {
+        pendingSaveRemap = true;
+      }
+    })
+  );
   const idxSub = index.onDidChange(() => {
     if (pendingSaveRemap) {
       pendingSaveRemap = false;
@@ -223,7 +344,11 @@ function adoptPanel(context: vscode.ExtensionContext, index: WorkspaceIndex, sto
     }
     if (panel === created) {
       panel = undefined;
-      notifyActiveEvent(undefined);
+      if (!shuttingDown) {
+        // Closed by the user (a window reload keeps the session for the next load).
+        notifyActiveEvent(undefined);
+        void context.workspaceState.update(SESSION_KEY, undefined);
+      }
     }
   });
   created.webview.onDidReceiveMessage((msg) => {
@@ -295,6 +420,14 @@ async function onMessage(
       void vscode.window.showInformationMessage(`Reverted: ${result.label}`);
     }
     await publish(context, index, store);
+    return;
+  }
+  if (msg.type === 'reload') {
+    try {
+      await reloadFromDisk(context, index, store);
+    } finally {
+      await target.webview.postMessage({ type: 'reloaded' });
+    }
     return;
   }
   if (msg.type === 'refreshBridge') {
@@ -1889,6 +2022,23 @@ const imgCache = new Map<string, ResolvedImageInfo | undefined>();
 /** Paperdoll scene + timed trace per stop, keyed "previousStopLine|line". */
 const analyzeCache = new Map<string, PaperdollAnalysis & { trace: PdTrace }>();
 
+/**
+ * "⟳ Reload": forget everything resolved, re-read every script (not only the ones whose
+ * modification time changed), map the session again and rewrite the capture bridge.
+ */
+async function reloadFromDisk(context: vscode.ExtensionContext, index: WorkspaceIndex, store: PortraitStore): Promise<void> {
+  imgCacheVersion = -1;
+  analyzeStamp = '';
+  imgCache.clear();
+  analyzeCache.clear();
+  patternValueCache.clear();
+  imageRootsCache = undefined;
+  pendingSaveRemap = false;
+  await index.reindex(true);
+  await publish(context, index, store, true);
+  await refreshCaptureBridge(true);
+}
+
 function ensureCaches(indexVersion: number, docStamp: string): void {
   if (indexVersion !== imgCacheVersion) {
     imgCacheVersion = indexVersion;
@@ -1952,6 +2102,18 @@ async function publishNow(
   const text = doc.getText();
   const srcLines = text.split('\n');
   const labels = labelsOf(doc);
+  // Follow the event when lines were added or removed above it since the last publish.
+  const label = anchor && labels.find((l) => !l.isSub && l.name === anchor!.label);
+  if (anchor && label) {
+    const start = label.range.start.line;
+    if (anchor.line < 0) {
+      if (labelAtLine(labels.filter((l) => !l.isSub), session.line)?.name !== anchor.label) {
+        session.line = start;
+      }
+    } else if (start !== anchor.line) {
+      session.line = Math.max(start, session.line + start - anchor.line);
+    }
+  }
   const portraitFiles = collectPortraitFiles(context, store);
   const persons = withExtraPersonKeys(index.getPersonIndex(), portraitFiles.keys());
   const timeline = buildEventTimeline(text, labels, persons, session.line, (line) => {
@@ -1961,7 +2123,11 @@ async function publishNow(
   lastBranches = timeline.branches;
   lastValues = timeline.values;
   lastEventLabel = timeline.eventLabel;
+  const eventStart = labels.find((l) => !l.isSub && l.name === timeline.eventLabel)?.range.start.line;
+  anchor = timeline.eventLabel && eventStart !== undefined ? { label: timeline.eventLabel, line: eventStart } : undefined;
   notifyActiveEvent(timeline.eventLabel ? { uri: session.uri, line: session.line, event: timeline.eventLabel } : undefined);
+  const stored: StoredSession = { uri: session.uri.toString(), line: session.line, selections: session.selections, values: session.values, event: timeline.eventLabel };
+  void context.workspaceState.update(SESSION_KEY, stored);
   defEditor?.setLabel(timeline.eventLabel);
 
   // Paperdoll simulation is the only whole-file parse; skip it entirely for the common
@@ -2645,6 +2811,7 @@ function html(webview: Pick<vscode.Webview, 'cspSource' | 'asWebviewUri'>): stri
         <button class="alt" id="simbtn" title="When does this event fire? Simulate time, levels and stats against its conditions and its pool">🎯 Trigger</button>
         <button class="alt" id="overviewbtn" title="Overview of all events">🗂</button>
         <button class="alt" id="undo" title="Undo last timeline change">↩ Undo</button>
+        <button class="alt" id="reloadbtn" title="Read the scripts again and rebuild this view (when changes made outside the editor, e.g. by an AI agent, do not show up)">⟳ Reload</button>
         <button class="alt" id="bridgebtn" title="Write the capture bridge file for the MTS Capture studio plugin again (if the plugin shows an old event)">📷 Bridge</button>
         <button class="alt" id="historybtn" title="Change history: every code change made by the event manager as a diff — revert block by block">🕘 History</button>
       </div>

@@ -313,8 +313,8 @@ interface ActiveEvent {
 
 let instance: CaptureBridge | undefined;
 
-/** "MTS: Refresh Capture Bridge" and the event editor's button. */
-export async function refreshCaptureBridge(): Promise<void> {
+/** "MTS: Refresh Capture Bridge" and the event editor's buttons (`quiet`: no success message). */
+export async function refreshCaptureBridge(quiet = false): Promise<void> {
   if (!instance) {
     return;
   }
@@ -325,7 +325,7 @@ export async function refreshCaptureBridge(): Promise<void> {
   const error = await instance.refresh();
   if (error) {
     void vscode.window.showWarningMessage(`Capture bridge could not be written: ${error}`);
-  } else {
+  } else if (!quiet) {
     void vscode.window.showInformationMessage(`Capture bridge refreshed: ${bridgeFile()}`);
   }
 }
@@ -354,9 +354,24 @@ export class CaptureBridge implements vscode.Disposable {
     const watcher = vscode.workspace.createFileSystemWatcher('**/images/**/*.{png,webp,jpg,jpeg}');
     const onImages = () => this.schedule(true);
     this.subs.push(watcher, watcher.onDidCreate(onImages), watcher.onDidDelete(onImages));
+    // Saved here, or written by another program (AI agent, git): VS Code reloads a clean
+    // buffer without a save event.
+    const isActive = (uri: vscode.Uri) => !!this.active && uri.toString() === this.active.uri.toString();
+    const scripts = vscode.workspace.createFileSystemWatcher('**/*.rpy');
     this.subs.push(
       vscode.workspace.onDidSaveTextDocument((d) => {
-        if (this.active && d.uri.toString() === this.active.uri.toString()) {
+        if (isActive(d.uri)) {
+          this.schedule(true);
+        }
+      }),
+      vscode.workspace.onDidChangeTextDocument((e) => {
+        if (isActive(e.document.uri) && e.contentChanges.length && !e.document.isDirty) {
+          this.schedule(true);
+        }
+      }),
+      scripts,
+      scripts.onDidChange((uri) => {
+        if (isActive(uri)) {
           this.schedule(true);
         }
       })

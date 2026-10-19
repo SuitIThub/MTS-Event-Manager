@@ -9,7 +9,7 @@ import { initWebviewAssets } from './webviewAssets';
 import { CaptureBridge, refreshCaptureBridge } from './captureBridge';
 import { MtsCodeLensProvider } from './codeLens';
 import { registerCommands } from './commands';
-import { registerPreviewSerializer } from './previewPanel';
+import { previewShutdown, registerPreviewSerializer, restorePreviewSession } from './previewPanel';
 import { registerOverviewSerializer } from './eventOverview';
 import { EventDiagnostics } from './diagnostics';
 import { MtsImageHoverProvider } from './imageHover';
@@ -109,6 +109,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   await index.reindex();
+  // Panel revival / capture bridge after a window reload (the session lives in workspace state).
+  restorePreviewSession(context, index, portraits);
 
   if (index.hasEventSyntax) {
     console.log(
@@ -119,4 +121,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  // The panels are disposed next: keep the preview session for the reloaded window.
+  previewShutdown();
+}

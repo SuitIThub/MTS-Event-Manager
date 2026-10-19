@@ -7,6 +7,22 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.7] - 2026-10-19
+
+### Added
+- **⟳ Reload** in the event editor header: reads every script again, forgets everything
+  resolved, rebuilds the view and rewrites the capture bridge.
+
+### Fixed
+- **Changes made outside the editor** (AI agents, git, other programs) now refresh the event
+  editor and the capture bridge; before, only a save inside VS Code did. When lines are added or
+  removed above the open event, the editor stays on that event instead of landing in another one.
+- **Event editor after a window reload:** the session is kept in the workspace, so the capture
+  bridge points at the event right after loading, without opening the preview first. A preview tab
+  that VS Code restored but never handed back to the extension (seen with the editor in a separate
+  window) is replaced in place, and opening an event reuses that spot instead of adding a second
+  panel. Restore steps are logged in the *MTS Event Preview* output channel.
+
 ## [0.6.6] - 2026-10-19
 
 ### Fixed
