@@ -20,6 +20,16 @@ namespace MTSCapture.Core
         public string Path;
         public string Existing;
         public List<int> Lines = new List<int>();
+        /// <summary>The comment block above the show call(s) in the script; null when there is none.</summary>
+        public string Description;
+
+        /// <summary>First line of the description, cut to <paramref name="max"/> characters (for list rows).</summary>
+        public string DescriptionHint(int max)
+        {
+            if (string.IsNullOrEmpty(Description)) return null;
+            var first = Description.Split('\n')[0].Trim();
+            return first.Length <= max ? first : first.Substring(0, Math.Max(1, max - 1)).TrimEnd() + "…";
+        }
 
         public string Describe(IList<string> keyOrder)
         {
@@ -83,6 +93,7 @@ namespace MTSCapture.Core
                     IsWildcard = t.TryGetValue("wildcard", out var w) && w is bool wb && wb,
                     Path = Str(t, "path"),
                     Existing = Str(t, "existing"),
+                    Description = string.IsNullOrEmpty(Str(t, "description")) ? null : Str(t, "description").Replace("\r\n", "\n"),
                 };
                 if (t.TryGetValue("values", out var vo) && vo is Dictionary<string, object> vals)
                     foreach (var e in vals)

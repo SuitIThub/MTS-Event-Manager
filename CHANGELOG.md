@@ -7,6 +7,19 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.5] - 2026-10-19
+
+### Added
+- **Image descriptions in MTS Capture**: the `#` comment block above an image's show call
+  (`$ image.show(3)`) is written into the capture bridge and shown with the target in the studio
+  plugin, and as a hint in the target list — note in the script what each picture should show.
+
+### Changed
+- **MTS Capture window reworked**: resizable (grip bottom right, the target list takes the extra
+  height), sections in boxes, a progress bar for the event, list options folded under *Options*,
+  the target with its file, script line and state, coloured status marks in the list, and the
+  selected row stays in view.
+
 ## [0.6.4] - 2026-10-19
 
 ### Fixed

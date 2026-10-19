@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { defaultBridgeFile, localBridgePath, writeAtomic } from '../src/captureBridge';
+import { buildTargets, commentAbove, defaultBridgeFile, localBridgePath, writeAtomic } from '../src/captureBridge';
 import { alignCrlfEdits } from '../src/codeStructure';
 import { planMoveStatement } from '../src/sceneOps';
 import { applyEdits } from '../src/pyCall';
@@ -268,6 +268,22 @@ const bridgeCheck = (async () => {
     'bridge default: LOCALAPPDATA on Windows, XDG / ~/.local/share on Linux and macOS (= the plugin under Wine)');
   check(localBridgePath('Z:\\home\\me\\bridge.json', 'linux', '/home/me') === '/home/me/bridge.json' && localBridgePath('Z:\\home\\me\\bridge.json', 'win32') === 'Z:\\home\\me\\bridge.json',
     'a Wine path from the plugin settings works in the extension on Linux');
+  const script = [
+    '    $ image.show(0)',
+    '    # ──────────',
+    '    # She opens the door,',
+    '    #   folder under one arm.',
+    '',
+    '    # Close-up.',
+    '',
+    '    $ image.show(1)',
+    '    $ image.show(2)',
+  ];
+  check(commentAbove(script, 7) === 'She opens the door,\nfolder under one arm.\n\nClose-up.' && commentAbove(script, 8) === undefined && commentAbove(script, 0) === undefined,
+    'image description: comment block above the show call (blank lines kept as paragraphs, separators dropped), none after code');
+  const row = (step: number, line: number) => ({ patternKey: 'main', step, keys: [], lines: [line], video: false, cells: [{ combo: {}, status: 'missing' as const, expected: `images/e ${step}.webp` }], exact: 0, wildcard: 0, missing: 1 });
+  const described = buildTargets([row(1, 7), row(2, 8)], dir, [dir], script.join('\r\n')).targets;
+  check(described[0].description === commentAbove(script, 7) && described[1].description === undefined, 'bridge targets carry their description (CRLF source)');
   fs.rmSync(dir, { recursive: true, force: true });
 })();
 

@@ -259,22 +259,29 @@ VS Code event editor ──► active-event.json ──► MTS Capture window �
 2. In StudioNeoV2 click the **camera** button in the left toolbar.
 3. Take a screenshot. The Screencap plugin's F11 saves into `UserData\cap` by default. The newest capture
    appears in the window automatically.
-4. The target is preselected: the next image in your order. Change it with `<` `>`, **Skip** or the list.
-5. Click **Assign**. The capture is copied as PNG to the target path. The extension sees the new file, checks
+4. The target is preselected: the next image in your order. Change it with ◄ ►, **Skip** or the list.
+   The comment block above its show call in the script appears below it as the image's **description**.
+5. Click **Assign capture**. The capture is copied as PNG to the target path. The extension sees the new file, checks
    again, and the image drops out of *Only missing*.
 
 ### The window
 
+The window can be resized with the grip in its bottom-right corner; the target list takes the extra height.
+
+- **Description:** the `#` comment block directly above the show call (`$ image.show(3)`) — blank lines between
+  comment and call are fine, any code line ends the block. Write what the picture should show there, and it
+  appears with the target (and as a hint in the list).
 - **All images / Only missing:** list every image, including existing ones (these can be re-shot and are
   replaced after a confirmation), or only images without a file.
-- **$ images:** also offer `$` wildcard images. One file like `x $ 0.png` serves every value of that key.
+- **Options ▼** folds out the list options below:
+- **Offer $ images:** also offer `$` wildcard images. One file like `x $ 0.png` serves every value of that key.
   They come first per key and can simply be skipped.
 - **$-covered = missing:** in *Only missing*, an image that only a `$` file serves still counts as missing.
 - **Order:** ▲▼ sort the keys. Key 1 changes slowest. With `school_level, uniform, step` you get all uniforms
   and steps of level 1, then level 2, and so on. `pattern` (main, card, …) is a key too. The order is saved per
   event.
-- **Size warning:** if the capture isn't the expected size (default 1920×1080), a warning appears above
-  **Assign**.
+- **Size warning:** if the capture isn't the expected size (default 1920×1080), its size is shown in orange
+  under the preview.
 - **Replace:** an existing target needs a second click. The old file is backed up first.
 - **Older .webp:** if the same image exists as `.webp`, the game would keep loading it until the PNG is
   converted. By default the plugin moves the `.webp` into the backup, so the game shows the new PNG right away.

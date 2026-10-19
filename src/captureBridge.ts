@@ -34,6 +34,8 @@ export interface CaptureTarget {
   /** Absolute path of the file serving it now, if any. */
   existing?: string;
   lines: number[];
+  /** The comment block above the show call(s) — what the image should show. */
+  description?: string;
 }
 
 export interface BridgeData {
@@ -117,6 +119,42 @@ function existingFile(root: string, relative: string): string | undefined {
   return undefined;
 }
 
+/**
+ * The comment block above `line` (0-based): the `#` lines directly above it, blank lines in
+ * between allowed, up to the first code line. `#` is stripped; pure separator lines (`# ────`)
+ * are dropped, a blank line inside the block stays a paragraph break.
+ */
+export function commentAbove(lines: string[], line: number): string | undefined {
+  const out: string[] = [];
+  let gap = false;
+  for (let i = Math.min(line, lines.length) - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (!t) {
+      gap = out.length > 0;
+      continue;
+    }
+    if (!t.startsWith('#')) {
+      break;
+    }
+    const body = t.replace(/^#+/, '').trim();
+    if (!/[\p{L}\p{N}]/u.test(body)) {
+      continue;
+    }
+    if (gap && out[0] !== '') {
+      out.unshift('');
+    }
+    gap = false;
+    out.unshift(body);
+  }
+  return out.length ? out.join('\n') : undefined;
+}
+
+/** Distinct comment blocks of a row's show calls, separated by a blank line. */
+function describe(lines: string[], callLines: number[]): string | undefined {
+  const blocks = [...new Set([...callLines].sort((a, b) => a - b).map((l) => commentAbove(lines, l)).filter((d): d is string => !!d))];
+  return blocks.length ? blocks.join('\n\n') : undefined;
+}
+
 /** Non-empty subsets of `keys` (for the `$` wildcard targets), smallest first. */
 function subsets(keys: string[]): string[][] {
   const out: string[][] = [];
@@ -128,18 +166,21 @@ function subsets(keys: string[]): string[][] {
 
 /**
  * Targets of the coverage rows (videos excluded — a capture is a still). Every row's cells
- * become targets; for each cell also its `$` variants (one or more keys as `$`).
+ * become targets; for each cell also its `$` variants (one or more keys as `$`). `source`:
+ * the script text the rows' lines refer to — their comment blocks become the descriptions.
  */
 export function buildTargets(
   coverage: CoverageRow[],
   root: string,
-  gameRoots: string[]
+  gameRoots: string[],
+  source?: string
 ): { targets: CaptureTarget[]; keys: string[]; keyValues: Record<string, string[]>; truncated: boolean } {
   const targets: CaptureTarget[] = [];
   const seen = new Set<string>();
   const keyOrder: string[] = [];
   const keyValues: Record<string, Set<string>> = {};
   let truncated = false;
+  const srcLines = source !== undefined ? source.split(/\r?\n/) : [];
   const find = (rel: string) => {
     for (const r of [root, ...gameRoots.filter((g) => g !== root)]) {
       const f = existingFile(r, rel);
@@ -164,6 +205,7 @@ export function buildTargets(
     if (row.video) {
       continue;
     }
+    const description = describe(srcLines, row.lines);
     for (const k of row.keys) {
       if (!keyOrder.includes(k)) {
         keyOrder.push(k);
@@ -188,6 +230,7 @@ export function buildTargets(
         path: targetPath(root, cell.expected),
         existing: cell.file ? find(cell.file) : undefined,
         lines: row.lines,
+        description,
       });
     }
     // `$` files: the engine falls back to them for any value of those keys (never for step).
@@ -217,6 +260,7 @@ export function buildTargets(
           path: targetPath(root, rel),
           existing,
           lines: row.lines,
+          description,
         });
       }
     }
@@ -391,7 +435,7 @@ export class CaptureBridge implements vscode.Disposable {
     if (!root) {
       throw new Error('No game image folder found for this event (open the game folder, or set mtsEventManager.imageRoots).');
     }
-    const built = buildTargets(result.coverage, root, roots);
+    const built = buildTargets(result.coverage, root, roots, text);
     await writeAtomic(file, {
       version: BRIDGE_VERSION,
       written: new Date().toISOString(),

@@ -17,12 +17,14 @@ Copy `MTSCapture.dll` (from the release) into `<Honey Select 2>\BepInEx\plugins\
 1. In VS Code, open an event in the event editor. The extension writes its image targets to
    `%LOCALAPPDATA%\MTS-Event-Manager\capture\active-event.json`.
 2. In the studio, click the camera button, then take a screenshot (Screencap F11 → `UserData\cap`).
-3. The newest capture appears in the window with the next target preselected. Change the target with `<` `>`,
-   **Skip** or the list.
+3. The newest capture appears in the window with the next target preselected. Change the target with ◄ ►,
+   **Skip** or the list. The `#` comment block above the target's show call in the script is shown as its
+   description.
 4. Click **Assign**. The PNG is written to `game/images/…`, and the extension re-checks the event.
 
-Window options:
-- **All images / Only missing**, **$ images** (wildcard files that serve every value of a key), **$-covered =
+Window (resizable via the bottom-right grip; the list takes the extra height):
+- **Description** of the target: the comment block above its show call (also a hint in the list).
+- **All images / Only missing**; under **Options ▼**: **$ images** (wildcard files that serve every value of a key), **$-covered =
   missing**.
 - **Order:** the key order. Key 1 changes slowest, and the order is saved per event.
 - **Size warning** when a capture isn't 1920×1080 (configurable).

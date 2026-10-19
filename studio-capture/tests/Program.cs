@@ -95,7 +95,8 @@ internal static class Program
                         ",\"values\":{\"school_level\":\"" + level + "\",\"uniform\":\"" + uniform + "\",\"step\":\"" + step + "\"}," +
                         "\"status\":\"" + status + "\",\"wildcard\":" + (wild ? "true" : "false") + ",\"path\":\"" + Esc(path) + "\",\"lines\":[3]}");
                 }
-        targets.Add("{\"id\":\"end|x\",\"pattern\":\"end\",\"step\":null,\"values\":{\"school_level\":\"1\"},\"status\":\"wildcard\",\"wildcard\":false,\"path\":\"" + Esc(Path.Combine(images, "ev", "end 1.png")) + "\",\"lines\":[]}");
+        targets.Add("{\"id\":\"end|x\",\"pattern\":\"end\",\"step\":null,\"values\":{\"school_level\":\"1\"},\"status\":\"wildcard\",\"wildcard\":false,\"path\":\"" + Esc(Path.Combine(images, "ev", "end 1.png")) + "\",\"lines\":[]," +
+            "\"description\":\"She waves goodbye at the gate,\\r\\nbag over one shoulder.\\n\\nClose-up.\"}");
         var json = "{\"version\":1,\"written\":\"2026-09-26T12:00:00.000Z\",\"event\":\"ev\",\"file\":\"x.rpy\"," +
                    "\"keys\":[\"school_level\",\"uniform\",\"step\"]," +
                    "\"keyValues\":{\"school_level\":[\"$\",\"1\",\"2\"],\"uniform\":[\"$\",\"a\",\"b\"],\"step\":[\"0\",\"1\"]}," +
@@ -103,6 +104,11 @@ internal static class Program
         var b = BridgeData.FromJson(json);
         Check(b.Event == "ev" && b.Targets.Count == 19 && b.AllowedRoots.Count == 1 && b.Written.Year == 2026, "bridge: parsed event, targets, roots, time");
         Check(b.Targets.Count(t => t.IsWildcard) == 10 && b.Targets.Last().Step == null && b.Targets.Last().Status == TargetStatus.Wildcard, "bridge: wildcard flags, null step, status");
+        var end = b.Targets.Last();
+        Check(end.Description == "She waves goodbye at the gate,\nbag over one shoulder.\n\nClose-up." && b.Targets[0].Description == null,
+            "bridge: description read (line breaks normalised), absent = null");
+        Check(end.DescriptionHint(100) == "She waves goodbye at the gate," && end.DescriptionHint(10) == "She waves…" && b.Targets[0].DescriptionHint(10) == null,
+            "bridge: description hint = first line, cut with an ellipsis");
         bool threw = false;
         try { BridgeData.FromJson("{\"version\":2}"); } catch (FormatException) { threw = true; }
         Check(threw, "bridge: other versions are refused");
