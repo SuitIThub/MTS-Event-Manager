@@ -7,6 +7,14 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.6] - 2026-10-19
+
+### Fixed
+- **MTS Capture window kept getting wider** on its own up to the maximum width and could not be
+  made narrower; the progress bar and the capture preview asked for more width than the window had.
+- **Target list in MTS Capture** no longer stops short with an empty gap below it: it now fills the
+  window down to the status line, and shows at least four rows (the window grows if needed).
+
 ## [0.6.5] - 2026-10-19
 
 ### Added

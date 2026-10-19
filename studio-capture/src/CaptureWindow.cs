@@ -17,7 +17,13 @@ namespace MTSCapture
         private const float MinHeight = 420f;
         private const float GripSize = 16f;
         private const float DescriptionMaxHeight = 120f;
-        private Rect windowRect = new Rect(80, 80, 420, 680);
+        private const float RowHeight = 22f;
+        private const float ListMinHeight = 4 * (RowHeight + 4) + 6; // four rows
+        private Rect windowRect = new Rect(80, 80, 420, 720);
+        // The size the user chose. IMGUI grows windowRect when the content needs more; resetting it
+        // from here each frame keeps that from accumulating.
+        private Vector2 windowSize = new Vector2(420, 720);
+        private float listHeight = ListMinHeight;
         private Vector2 listScroll, descriptionScroll;
         private bool showOptions;
         private bool resizing;
@@ -34,8 +40,9 @@ namespace MTSCapture
             if (!windowVisible) return;
             InitStyles();
             HandleResize();
-            windowRect.width = Mathf.Clamp(windowRect.width, MinWidth, MaxWidth);
-            windowRect.height = Mathf.Clamp(windowRect.height, MinHeight, Mathf.Max(MinHeight, Screen.height));
+            windowSize.x = Mathf.Clamp(windowSize.x, MinWidth, MaxWidth);
+            windowSize.y = Mathf.Clamp(windowSize.y, MinHeight, Mathf.Max(MinHeight, Screen.height));
+            windowRect.size = windowSize;
             IMGUIUtils.DrawSolidBox(windowRect);
             windowRect = GUILayout.Window(WindowId, windowRect, DrawWindow, PluginName + "  " + Version,
                 GUILayout.Width(windowRect.width), GUILayout.Height(windowRect.height));
@@ -48,8 +55,7 @@ namespace MTSCapture
             if (!resizing) return;
             if (!Input.GetMouseButton(0)) { resizing = false; return; }
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-            windowRect.width = resizeStartSize.x + mouse.x - resizeStart.x;
-            windowRect.height = resizeStartSize.y + mouse.y - resizeStart.y;
+            windowSize = resizeStartSize + mouse - resizeStart;
         }
 
         private void InitStyles()
@@ -102,6 +108,7 @@ namespace MTSCapture
             GUILayout.Label(Status ?? "", StatusIsError ? warnStyle : mutedStyle, GUILayout.MinHeight(18));
             GUILayout.Space(GripSize);
             GUILayout.EndHorizontal();
+            FitList(GUILayoutUtility.GetLastRect().yMax);
             DrawGrip();
             GUI.DragWindow(new Rect(0, 0, windowRect.width - 26, 20));
         }
@@ -122,7 +129,7 @@ namespace MTSCapture
             {
                 resizing = true;
                 resizeStart = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-                resizeStartSize = new Vector2(windowRect.width, windowRect.height);
+                resizeStartSize = windowSize;
                 Event.current.Use();
             }
         }
@@ -155,7 +162,7 @@ namespace MTSCapture
                 if (t.Status == TargetStatus.Missing && !IsDone(t)) missing++;
             }
             // Progress: share of images that exist (or were assigned here).
-            var bar = GUILayoutUtility.GetRect(Inner - 16, 6);
+            var bar = GUILayoutUtility.GetRect(0, 6, GUILayout.ExpandWidth(true));
             if (Event.current.type == EventType.Repaint)
             {
                 var c = GUI.color;
@@ -219,8 +226,8 @@ namespace MTSCapture
                 return;
             }
             float w = Inner - 16;
-            float h = Mathf.Min(w * CaptureHeight / Math.Max(1, CaptureWidth), Mathf.Max(110f, windowRect.height * 0.26f));
-            var r = GUILayoutUtility.GetRect(w, h);
+            float h = Mathf.Min(w * CaptureHeight / Math.Max(1, CaptureWidth), Mathf.Max(100f, windowSize.y * 0.24f));
+            var r = GUILayoutUtility.GetRect(0, h, GUILayout.ExpandWidth(true));
             GUI.DrawTexture(r, CaptureTexture, ScaleMode.ScaleToFit);
             var size = CaptureWidth + "×" + CaptureHeight;
             GUILayout.Label(Path.GetFileName(CapturePath) + "  ·  " + (SizeMismatch ? "<color=#ff9966><b>" + size + "</b> (expected " + TargetWidth.Value + "×" + TargetHeight.Value + ")</color>" : size), mutedStyle);
@@ -314,8 +321,9 @@ namespace MTSCapture
         {
             if (Listed.Count == 0) { GUILayout.FlexibleSpace(); return; }
             GUILayout.Label("ALL TARGETS", headStyle);
-            listScroll = GUILayout.BeginScrollView(listScroll, GUILayout.MinHeight(70), GUILayout.ExpandHeight(true));
-            const float rowHeight = 22f;
+            // Explicit height (see FitList): ExpandHeight does not hand the window's spare height
+            // to the scroll view reliably in GUILayout.Window.
+            listScroll = GUILayout.BeginScrollView(listScroll, GUILayout.Height(listHeight));
             int hintChars = Mathf.Max(0, (int)((Inner - 200) / 6.5f));
             for (int i = 0; i < Listed.Count; i++)
             {
@@ -326,18 +334,31 @@ namespace MTSCapture
                     : "<color=#9a9a9a>=</color>";
                 var hint = hintChars > 8 ? row.DescriptionHint(hintChars) : null;
                 var label = tag + "  " + row.Describe(KeyOrder) + (hint == null ? "" : "   <color=#8c8c8c>" + hint.Replace("<", "‹") + "</color>");
-                if (GUILayout.Button(label, i == Selected ? selectedStyle : rowStyle, GUILayout.Height(rowHeight))) Select(i);
+                if (GUILayout.Button(label, i == Selected ? selectedStyle : rowStyle, GUILayout.Height(RowHeight))) Select(i);
             }
             GUILayout.EndScrollView();
             // Keep the selected row visible when it changes from elsewhere (◄ ►, skip, assign).
             if (scrolledTo != Selected && Event.current.type == EventType.Repaint)
             {
                 var view = GUILayoutUtility.GetLastRect();
-                float top = Selected * (rowHeight + Mathf.Max(rowStyle.margin.top, rowStyle.margin.bottom));
+                float top = Selected * (RowHeight + Mathf.Max(rowStyle.margin.top, rowStyle.margin.bottom));
                 if (top < listScroll.y) listScroll.y = top;
-                else if (top + rowHeight > listScroll.y + view.height) listScroll.y = top + rowHeight - view.height + 4;
+                else if (top + RowHeight > listScroll.y + view.height) listScroll.y = top + RowHeight - view.height + 4;
                 scrolledTo = Selected;
             }
+        }
+
+        /// <summary>
+        /// Gives the target list the height left between the content's bottom and the window's
+        /// bottom edge (measured on repaint, applied on the next layout). Measured against the
+        /// chosen <see cref="windowSize"/>, so it settles instead of growing the window.
+        /// </summary>
+        private void FitList(float contentBottom)
+        {
+            if (Event.current.type != EventType.Repaint || Bridge == null || Bridge.Event == null || Listed.Count == 0) return;
+            float spare = windowSize.y - GUI.skin.window.padding.bottom - contentBottom;
+            float wanted = Mathf.Max(ListMinHeight, listHeight + spare);
+            if (Mathf.Abs(wanted - listHeight) >= 1f) listHeight = wanted;
         }
 
         private void Select(int index)
