@@ -322,11 +322,12 @@ export class CaptureBridge implements vscode.Disposable {
   /** The event editor shows the event at `line` of `uri` (undefined: panel closed). */
   setActive(active: ActiveEvent | undefined): void {
     const key = active ? `${active.uri.toString()}#${active.event}` : '';
+    // Always keep the latest line (edits above the event shift it), rewrite only on a new event.
+    this.active = active;
     if (key === this.lastKey) {
       return;
     }
     this.lastKey = key;
-    this.active = active;
     this.schedule(false);
   }
 
@@ -380,7 +381,9 @@ export class CaptureBridge implements vscode.Disposable {
     const doc = await vscode.workspace.openTextDocument(active.uri);
     const text = doc.getText();
     const labels = parseLabelsInDocument(doc.uri, text);
-    const result = await runEventCheck(this.index, doc.uri, text, labels, active.line);
+    // The event by name: a stored line goes stale when lines are added above the label.
+    const line = labels.find((l) => !l.isSub && l.name === active.event)?.range.start.line ?? active.line;
+    const result = await runEventCheck(this.index, doc.uri, text, labels, line);
     const eventLabel = result.eventLabel;
     const defs = [...this.index.getEventsForLabel(eventLabel), ...this.index.getFragmentParents(eventLabel).flatMap((p) => this.index.getEventsForLabel(p))];
     const roots = await getImageRoots();

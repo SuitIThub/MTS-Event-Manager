@@ -7,6 +7,14 @@ Format: one `## [x.y.z] - YYYY-MM-DD` section per version, newest first. The rel
 publishes the sections of the whole minor line as the release notes (0.6.1 shows 0.6.1 and 0.6.0),
 so **every version bump needs a section here** (the build fails without one).
 
+## [0.6.4] - 2026-10-19
+
+### Fixed
+- **Capture bridge stuck on the previous event**: after lines were added above the open event's
+  label (e.g. a new `Pattern` in its definition), the bridge — and *Refresh Capture Bridge* — kept
+  writing the event before it, so the studio plugin never switched. The bridge now finds the event
+  by its label name and always keeps the event editor's current line.
+
 ## [0.6.3] - 2026-09-30
 
 ### Added
